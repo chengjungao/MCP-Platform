@@ -1,0 +1,148 @@
+# MCP 桥接平台 —— 本地/单机一体化编排。
+#
+# 前置：先在仓库根执行 build.cmd -DskipTests clean package（或 mvn -DskipTests clean package）产出两个 jar，
+#       并在 mcp-manager-ui 下执行 npm ci && npm run build 产出 dist。
+#       镜像只负责把产物装进运行时，不在容器里编译。
+#
+# 起停：
+#   cd deploy
+#   copy .env.example .env        # Windows；Linux/macOS 用 cp
+#   docker compose up -d --build
+#   docker compose logs -f executor-1
+#
+# 拓扑：两个 Executor 共用一个 Redis（承载 BR-6 的共享状态），
+#       各自独立注册、独立熔断、独立持有本地快照——挂掉任一个，另一个继续服务。
+#       manager-ui 是纯静态 nginx，同源反代到 manager，不持有任何状态。
+
+name: mcp-platform
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcp-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mcpbridge}
+      POSTGRES_USER: ${POSTGRES_USER:-mcpbridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcpbridge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # 只绑回环：控制面库里存着 Auth-B 凭据密文，不该暴露到局域网
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcpbridge} -d ${POSTGRES_DB:-mcpbridge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    # AOF 开启：共享状态里含上游令牌缓存与失效广播，重启后丢掉会导致令牌重复换取
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    # 刻意不发布端口：Executor 走内部网络访问，Redis 无鉴权时对外暴露等于开门
+
+  manager:
+    build:
+      context: ..
+      dockerfile: deploy/docker/mcp-manager.Dockerfile
+    container_name: mcp-manager
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MANAGER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-mcpbridge}
+      POSTGRES_USER: ${POSTGRES_USER:-mcpbridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcpbridge}
+      # 下面三项在 .env 里给的是开发默认值，生产必须换成高熵随机串并入密钥管理
+      MANAGER_JWT_SECRET: ${MANAGER_JWT_SECRET:-dev-only-jwt-secret-please-change-me}
+      MANAGER_CRYPTO_KEY: ${MANAGER_CRYPTO_KEY:-dev-only-crypto-key-please-change-me}
+      EXECUTOR_BOOTSTRAP_TOKEN: ${EXECUTOR_BOOTSTRAP_TOKEN:-dev-executor-bootstrap-token}
+      EXECUTOR_CLUSTER_NAME: ${EXECUTOR_CLUSTER_NAME:-default}
+      # 集群入口 = MCP 客户端实际访问的地址，会写进每个已发布端点的 endpoint 字段
+      EXECUTOR_CLUSTER_ENTRYPOINT: ${EXECUTOR_CLUSTER_ENTRYPOINT:-http://localhost:9090}
+      MANAGER_ADMIN_PASSWORD: ${MANAGER_ADMIN_PASSWORD:-admin123}
+      # 本地联调放开内网文档拉取（SSRF 防护默认拒绝回环/私有网段）。生产必须为 false
+      MANAGER_PARSE_ALLOW_PRIVATE_NETWORKS: ${MANAGER_PARSE_ALLOW_PRIVATE_NETWORKS:-true}
+    ports:
+      - "${MANAGER_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  executor-1:
+    build:
+      context: ..
+      dockerfile: deploy/docker/mcp-executor.Dockerfile
+    container_name: mcp-executor-1
+    depends_on:
+      # 刻意用 service_started 而不是 service_healthy：Manager 不可达时 Executor 本来就该
+      # 靠自己的退避重试活下去（控制面故障不传导到数据面）。在这里硬等健康，
+      # 反而把「Manager 慢」变成「数据面起不来」。
+      manager:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment: &executor-env
+      EXECUTOR_PORT: 9090
+      MANAGER_BASE_URL: http://manager:8080
+      EXECUTOR_NODE_TOKEN: ${EXECUTOR_BOOTSTRAP_TOKEN:-dev-executor-bootstrap-token}
+      EXECUTOR_CLUSTER_NAME: ${EXECUTOR_CLUSTER_NAME:-default}
+      # nodeKey 留空时 Executor 用「主机名:端口」自述，容器环境下即容器 id，天然唯一
+      EXECUTOR_NODE_HOST: executor-1
+      EXECUTOR_REDIS_ENABLED: "true"
+      EXECUTOR_REDIS_ADDRESS: redis://redis:6379
+      EXECUTOR_POLL_INTERVAL: 10s
+      MCP_PATH_PREFIX: mcp
+    ports:
+      - "${EXECUTOR_1_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  executor-2:
+    build:
+      context: ..
+      dockerfile: deploy/docker/mcp-executor.Dockerfile
+    container_name: mcp-executor-2
+    depends_on:
+      manager:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *executor-env
+      EXECUTOR_NODE_HOST: executor-2
+    ports:
+      - "${EXECUTOR_2_PORT:-9091}:9090"
+    restart: unless-stopped
+
+  manager-ui:
+    build:
+      context: ..
+      dockerfile: deploy/docker/mcp-manager-ui.Dockerfile
+    container_name: mcp-manager-ui
+    depends_on:
+      # 也用 service_started：控制台是纯静态资源，nginx 起来就能服务页面。
+      # 如果 Manager 还没就绪，用户看到的是「接口报错」而不是「白屏」，
+      # 前者能自己看出原因，后者得去翻容器日志。
+      manager:
+        condition: service_started
+    ports:
+      - "${UI_PORT:-5173}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

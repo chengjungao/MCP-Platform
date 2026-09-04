@@ -1,0 +1,50 @@
+# ---- build output ----
+target/
+!.mvn/wrapper/maven-wrapper.jar
+build/
+out/
+dist/
+*.class
+*.jar
+*.war
+
+# ---- node / frontend ----
+node_modules/
+.mcp-manager-ui-cache/
+*.local
+.vite/
+coverage/
+
+# ---- logs & runtime ----
+logs/
+*.log
+*.pid
+data/
+pgdata/
+redis-data/
+
+# ---- env & secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.jks
+secrets/
+
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+*.swp
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini

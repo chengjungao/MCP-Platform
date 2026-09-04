@@ -1,0 +1,81 @@
+server:
+  port: ${EXECUTOR_PORT:9090}
+  shutdown: graceful
+
+spring:
+  application:
+    name: mcp-executor
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+  codec:
+    # MCP 请求通常几 KB；tools/call 可能带上较大的结构化参数，留足余量避免 413
+    max-in-memory-size: 8MB
+
+mcp:
+  executor:
+    manager:
+      # 控制面地址。数据面只在同步快照与心跳时访问它，Manager 不可达不影响已发布端点（R7）
+      base-url: ${MANAGER_BASE_URL:http://localhost:8080}
+      # 节点接入令牌（PUB-02）：Manager 只存它的 sha256，并据此反查集群归属
+      token: ${EXECUTOR_NODE_TOKEN:dev-executor-bootstrap-token}
+      # 需要跳过按名注册时，用环境变量 MCP_EXECUTOR_MANAGER_CLUSTER_ID 指定集群 id；
+      # 不在这里给空默认值：空字符串绑定到 Long 会直接启动失败
+      cluster-name: ${EXECUTOR_CLUSTER_NAME:default}
+      connect-timeout: 5s
+      read-timeout: 15s
+      # 两段式轮询：先查 revision（几十字节），变了才拉全量快照（EXE-01）
+      poll-interval: ${EXECUTOR_POLL_INTERVAL:10s}
+      retry-backoff: 5s
+    node:
+      # 留空则用「主机名:端口」；同一集群内必须唯一，否则注册会互相顶掉
+      key: ${EXECUTOR_NODE_KEY:}
+      host: ${EXECUTOR_NODE_HOST:127.0.0.1}
+      port: ${EXECUTOR_PORT:9090}
+      version: 0.1.0
+    redis:
+      # false 或连不上时退化为单节点内存模式：功能可用，但各节点独立换取上游令牌（BR-6）
+      enabled: ${EXECUTOR_REDIS_ENABLED:true}
+      address: ${EXECUTOR_REDIS_ADDRESS:redis://localhost:6379}
+      password: ${EXECUTOR_REDIS_PASSWORD:}
+      database: ${EXECUTOR_REDIS_DATABASE:0}
+      key-prefix: mcp
+      # OAuth2 上行令牌缓存时长；实际 TTL 取 min(上游 expires_in - 60s, 本值)
+      token-ttl: 30m
+      lock-wait: 5s
+      lock-lease: 30s
+    upstream:
+      # Server 未配置超时时的兜底值；每个 Server 可在覆盖配置里单独设置
+      connect-timeout: 3s
+      read-timeout: 30s
+      # 响应体入内存上限，超出即截断并在 result._meta 中标记（EXE-04）
+      max-response-bytes: 1048576
+    protocol:
+      # PATH 保留前缀（BR-3）：对外端点形如 http://host:9090/mcp/{末段}
+      path-prefix: ${MCP_PATH_PREFIX:mcp}
+      # Server 未配置 listTtlMs 时的默认值（SEP-2549）
+      default-list-ttl-ms: 30000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # 数据面是指标的主要来源：QPS、上游耗时、熔断状态都在这里被抓取
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: mcp-executor
+
+logging:
+  level:
+    root: INFO
+    com.mcpbridge: INFO
+    # Netty 的 DEBUG 会把整个上游请求体打进日志，其中可能含 Auth-B 凭据，禁止开启
+    reactor.netty.http.client: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+# SEC-02：所有可能含凭据的文本一律经 LogSanitizer 处理后才入日志

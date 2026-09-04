@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ | 项目内 Maven settings：仅用于修正仓库镜像协议。
+ |
+ | 背景：Maven 3.8.1+ 内置 maven-default-http-blocker，会拒绝所有 external:http:* 仓库。
+ | 若机器全局 settings.xml 中把 central 镜像到了 http:// 地址（常见于旧的 aliyun nexus 配置），
+ | 构建会报 "Blocked mirror for repositories"。本文件用同名 id 的 HTTPS 镜像覆盖它。
+ |
+ | 用法（build.cmd / build.ps1 已自动带上）：
+ |   mvn -s .mvn/settings.xml -gs .mvn/settings.xml clean package
+ |
+ | 需要复用本机已有仓库缓存时，可在此追加 <localRepository>D:\path\to\repo</localRepository>。
+ |-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+  <mirrors>
+    <mirror>
+      <id>alimaven</id>
+      <mirrorOf>central</mirrorOf>
+      <name>Aliyun Public (HTTPS)</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+  </mirrors>
+
+  <profiles>
+    <profile>
+      <id>https-central</id>
+      <repositories>
+        <repository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <id>central</id>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>https-central</activeProfile>
+  </activeProfiles>
+</settings>

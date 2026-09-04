@@ -1,0 +1,80 @@
+:root {
+  --mcp-bg: #f5f7fa;
+  --mcp-border: #e4e7ed;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--mcp-bg);
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', Arial, sans-serif;
+}
+
+/* 页面骨架：所有列表页共用，保证留白一致 */
+.page {
+  padding: 16px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.page-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.page-header .subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #909399;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* 只读原文（Swagger / JSON Schema）：等宽 + 可滚动 + 不自动换行，
+   换行会让 JSON Pointer 对不上行号 */
+.raw-block {
+  max-height: 480px;
+  padding: 12px;
+  margin: 0;
+  overflow: auto;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 4px;
+}
+
+.muted {
+  color: #909399;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+}
