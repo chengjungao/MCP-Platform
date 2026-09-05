@@ -80,9 +80,9 @@ onMounted(() => {
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat" @click="go('/registrations', 'registration:read')">
+        <el-card shadow="hover" class="stat" @click="go('/servers', 'server:read')">
           <div class="stat-value">{{ stats.registrations ?? '—' }}</div>
-          <div class="stat-label">注册文档</div>
+          <div class="stat-label">注册文档（在 Server 详情管理）</div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
@@ -148,11 +148,8 @@ onMounted(() => {
     <el-card shadow="never" class="quick-card">
       <template #header><span>常用操作</span></template>
       <div class="toolbar">
-        <el-button type="primary" :disabled="!auth.can('registration:create')" @click="go('/registrations')">
-          注册一份 Swagger 文档
-        </el-button>
-        <el-button :disabled="!auth.can('server:read')" @click="go('/servers')">
-          查看 MCP Server
+        <el-button type="primary" :disabled="!auth.can('server:read')" @click="go('/servers')">
+          MCP Server（新建 Server / 注册文档的入口）
         </el-button>
         <el-button :disabled="!auth.can('cluster:read')" @click="go('/clusters')">
           查看集群与节点

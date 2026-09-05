@@ -100,4 +100,22 @@ public final class ToolNames {
     public static boolean isValid(String name) {
         return name != null && VALID_NAME.matcher(name).matches();
     }
+
+    /**
+     * 多服务前缀拼接：{@code <serviceId>_<baseName>}（如 {@code order_getUser}）。
+     * <p>用于一个 Server 挂多份 Swagger 时避免同名 tool 冲突。
+     * <p>serviceId 先做 sanitize，保证拼接结果仍合法；超长时截断 baseName。
+     */
+    public static String withServicePrefix(String serviceId, String baseName) {
+        String prefix = sanitize(serviceId);
+        String name = sanitize(baseName);
+        if (prefix == null) {
+            return name;
+        }
+        if (name == null) {
+            name = "tool";
+        }
+        String joined = prefix + "_" + name;
+        return joined.length() > MAX_LENGTH ? joined.substring(0, MAX_LENGTH) : joined;
+    }
 }

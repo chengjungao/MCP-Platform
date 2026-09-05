@@ -76,6 +76,30 @@ public class DepartmentScope {
         return visible == null || (deptId != null && visible.contains(deptId));
     }
 
+    /**
+     * 部门到根的祖先链（含自身，自底向上）。
+     *
+     * <p>跨部门授权覆盖判定用：授权给部门 D = D 及其子树成员可访问。
+     * principal 属于 D 的子树 ⇔ D ∈ chain(principal.deptId)，
+     * 因此命中条件为「存在 APPROVED 授权，其 dept_id ∈ 本链」。
+     */
+    public List<Long> deptChainToRoot(Long deptId) {
+        if (deptId == null) {
+            return List.of();
+        }
+        Map<Long, Long> parentByDept = departmentRepository.findAll().stream()
+                .filter(d -> d.getParentId() != null)
+                .collect(Collectors.toMap(Department::getId, Department::getParentId));
+        List<Long> chain = new ArrayList<>();
+        Long current = deptId;
+        Set<Long> seen = new LinkedHashSet<>();
+        while (current != null && seen.add(current)) {
+            chain.add(current);
+            current = parentByDept.get(current);
+        }
+        return chain;
+    }
+
     /** 不可访问时抛 403。 */
     public void requireAccess(Long deptId, AuthPrincipal principal) {
         if (!canAccess(deptId, principal)) {

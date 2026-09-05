@@ -106,7 +106,7 @@ onMounted(() => {
 
     <el-form-item label="服务名">
       <el-input v-model="form.name" maxlength="128" show-word-limit :disabled="!auth.can('server:write')" />
-      <div class="hint muted">MCP Server 的 name，客户端在 tools/list 之外也能看到它。</div>
+      <div class="hint muted">MCP Server 的对外名称。多份 Swagger 聚合到同一 Server 时共用此名称，客户端在 tools/list 之外也能看到它。</div>
     </el-form-item>
 
     <el-form-item label="展示名">

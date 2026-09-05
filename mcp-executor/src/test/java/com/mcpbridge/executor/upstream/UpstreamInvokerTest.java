@@ -43,7 +43,8 @@ class UpstreamInvokerTest {
         ServerSnapshot server = server(30L, upstream(
                 UpstreamSnapshot.LbStrategy.WEIGHTED, List.of(5), List.of("http://only")));
 
-        assertThat(invoker.pickBaseUrl(server, server.upstream(), server.upstream().baseUrls()))
+        assertThat(invoker.pickBaseUrl(server, "30:default", server.effectiveUpstream(tool("x")).config(),
+                server.effectiveUpstream(tool("x")).config().baseUrls()))
                 .isEqualTo("http://only");
     }
 
@@ -56,7 +57,9 @@ class UpstreamInvokerTest {
 
         List<String> picks = new ArrayList<>();
         for (int i = 0; i < 6; i++) {
-            picks.add(invoker.pickBaseUrl(server, server.upstream(), server.upstream().baseUrls()));
+            picks.add(invoker.pickBaseUrl(server, "31:default",
+                    server.effectiveUpstream(tool("x")).config(),
+                    server.effectiveUpstream(tool("x")).config().baseUrls()));
         }
 
         assertThat(picks).containsExactly("http://a", "http://b", "http://c", "http://a", "http://b", "http://c");
@@ -198,9 +201,9 @@ class UpstreamInvokerTest {
                 UpstreamSnapshot.LbStrategy.ROUND_ROBIN, List.of(), 3_000L, 30_000L, 1, List.of(502),
                 new UpstreamSnapshot.CircuitBreaker(1, 60_000L, 1));
         ServerSnapshot server = server(42L, upstream);
-        breakers.onFailure(42L, upstream.circuitBreaker());
+        breakers.onFailure("42:default", upstream.circuitBreaker());
 
-        assertThat(breakers.states()).containsEntry(42L, CircuitBreakerRegistry.State.OPEN);
+        assertThat(breakers.states()).containsEntry("42:default", CircuitBreakerRegistry.State.OPEN);
 
         StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty()))
                 .expectErrorSatisfies(t -> {
@@ -218,7 +221,9 @@ class UpstreamInvokerTest {
     private Map<String, Integer> tally(ServerSnapshot server, int calls) {
         Map<String, Integer> counts = new HashMap<>();
         for (int i = 0; i < calls; i++) {
-            counts.merge(invoker.pickBaseUrl(server, server.upstream(), server.upstream().baseUrls()),
+            counts.merge(invoker.pickBaseUrl(server, server.serverId() + ":default",
+                    server.effectiveUpstream(tool("x")).config(),
+                    server.effectiveUpstream(tool("x")).config().baseUrls()),
                     1, Integer::sum);
         }
         return counts;
@@ -238,13 +243,15 @@ class UpstreamInvokerTest {
     private static ServerSnapshot server(long serverId, UpstreamSnapshot upstream) {
         return new ServerSnapshot(serverId, 1L, "order-service", "order", "订单服务", null, "1.0",
                 McpProtocol.SUPPORTED_VERSION, 1L, "http://gw.local/mcp/order",
-                null, null, upstream, List.of(), List.of(), List.of(), 30_000,
+                null, null,
+                List.of(com.mcpbridge.common.snapshot.UpstreamEntry.single("default", upstream)),
+                List.of(), List.of(), List.of(), 30_000,
                 Instant.parse("2026-09-03T00:00:00Z"));
     }
 
     private static ToolSnapshot tool(String name) {
         return new ToolSnapshot(name, null, null, "GET", "/orders", "GET /orders",
-                null, Map.of(), false, false, null, true, null);
+                null, Map.of(), false, false, null, true, "default", null);
     }
 
     private static ExecutorProperties properties() {

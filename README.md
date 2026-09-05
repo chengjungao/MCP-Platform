@@ -123,6 +123,9 @@ HTTP 镜像被 Maven 3.9 的 `maven-default-http-blocker` 拦截。
 | [docs/API.md](docs/API.md) | 控制面 REST 契约、内部通道契约、MCP 端点契约、错误码表、权限点与内置角色 |
 | [docs/adr/ADR-0001](docs/adr/ADR-0001-modern-only-protocol.md) | 协议策略 Modern-only：决策、被拒方案、后果 |
 | [docs/adr/ADR-0002](docs/adr/ADR-0002-base-overlay-merge.md) | base ⊕ overlay 生效模型与锚点挂起区 |
+| [docs/adr/ADR-0003](docs/adr/ADR-0003-streaming-bridge.md) | 流式桥接采用 Streamable HTTP SSE + 缓冲兜底 |
+| [docs/spike/RT-1-streaming-bridge.md](docs/spike/RT-1-streaming-bridge.md) | RT-1 Spike 报告：流式桥接协议层落地形态调研 |
+| [docs/spike/Multi-Upstream-Server-Design.md](docs/spike/Multi-Upstream-Server-Design.md) | 单 MCP Server 支持多 REST 服务数据模型变更设计 |
 | [docs/PRD/](docs/PRD/) | 产品规格文档 v0.2（需求来源） |
 | [deploy/README.md](deploy/README.md) | 编排拓扑、自检脚本、生产前必改项 |
 | [mcp-manager-ui/README.md](mcp-manager-ui/README.md) | 控制台工程说明 |
@@ -142,8 +145,9 @@ Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离
 **明确未实现**（都在 [架构说明 §10](docs/ARCHITECTURE.md#10-已知取舍与缺口) 里写明现状与影响，
 不做委婉表述）：
 
-- **流式 tool（BR-5）**：标记为流式的 tool 从 `tools/list` 剔除，直接调用返回 501 + `-32002`。
-  「列出来却调不通」比「不列」更糟。PRD 的 RT-1 Spike 未做，不做 P0 承诺。
+- **流式 tool（BR-5）**：Spike（RT-1）已完成，决策见 [ADR-0003](docs/adr/ADR-0003-streaming-bridge.md)——
+  采用 Streamable HTTP SSE + 缓冲兜底。当前仍维持 P0 行为（从 `tools/list` 剔除、调用返回 501），
+  P1 实现进行中。
 - **Auth-D OAuth 2.1（EXE-07）**：元数据会存、`resourceMetadataUrl` 会派生，但授权码 + PKCE + DCR
   未实现。配置成 OAUTH2 的 Server 端点**显式拒绝**（501 + `-32004`）——半实现的鉴权比没有
   鉴权更危险，因为它会让运维误以为端点已受保护。
@@ -179,4 +183,4 @@ npm run build
 
 ## License
 
-Apache License 2.0 —— 见 [LICENSE](LICENSE)。
+MIT License —— 见 [LICENSE](LICENSE)。

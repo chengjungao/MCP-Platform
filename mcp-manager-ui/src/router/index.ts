@@ -31,6 +31,8 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '概览' }
       },
       {
+        // 不进左侧菜单：注册与解析是 MCP Server 管理的二级功能，
+        // 入口在 Server 详情页「上游服务」tab；此路由保留为 URL 直达的全局排查视图
         path: 'registrations',
         name: 'registrations',
         component: () => import('@/views/RegistrationListView.vue'),
@@ -47,6 +49,12 @@ const routes: RouteRecordRaw[] = [
         name: 'server-detail',
         component: () => import('@/views/ServerDetailView.vue'),
         meta: { title: 'Server 详情', permission: 'server:read' }
+      },
+      {
+        path: 'access',
+        name: 'access',
+        component: () => import('@/views/AccessView.vue'),
+        meta: { title: '访问申请', permission: 'server:read' }
       },
       {
         path: 'clusters',

@@ -12,12 +12,13 @@ import type {
   PublishRequest,
   PublishResult,
   RollbackRequest,
+  ServerCreateRequest,
   ServerUpdateRequest,
   ServerView,
   ToolBatchToggleRequest,
   ToolOverlayRequest,
   ToolView,
-  UpstreamRequest
+  UpstreamEntryRequest
 } from './types'
 
 export function page(params: PageQuery = {}): Promise<PageView<ServerView>> {
@@ -28,12 +29,27 @@ export function view(id: number): Promise<ServerView> {
   return get<ServerView>(`/servers/${id}`)
 }
 
+/** 新建空 MCP Server（先建基础信息，再注册文档）。 */
+export function create(request: ServerCreateRequest): Promise<ServerView> {
+  return post<ServerView>('/servers', request)
+}
+
 export function update(id: number, request: ServerUpdateRequest): Promise<ServerView> {
   return put<ServerView>(`/servers/${id}`, request)
 }
 
-export function updateUpstream(id: number, request: UpstreamRequest): Promise<ServerView> {
-  return put<ServerView>(`/servers/${id}/upstream`, request)
+/** 按 serviceId upsert 单个上游服务配置（多服务支持）。 */
+export function upsertUpstream(
+  id: number,
+  serviceId: string,
+  request: UpstreamEntryRequest
+): Promise<ServerView> {
+  return put<ServerView>(`/servers/${id}/upstreams/${serviceId}`, request)
+}
+
+/** 删除某个上游服务（多服务场景下移除一份 Swagger 的上游配置）。 */
+export function deleteUpstream(id: number, serviceId: string): Promise<ServerView> {
+  return del<ServerView>(`/servers/${id}/upstreams/${serviceId}`)
 }
 
 export function authB(id: number): Promise<AuthBView> {

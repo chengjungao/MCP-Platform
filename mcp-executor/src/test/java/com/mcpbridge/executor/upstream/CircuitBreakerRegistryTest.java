@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CircuitBreakerRegistryTest {
 
-    private static final long SERVER_ID = 1L;
+    private static final String SERVER_ID = "1";
 
     private final CircuitBreakerRegistry registry = new CircuitBreakerRegistry();
 
@@ -127,10 +127,10 @@ class CircuitBreakerRegistryTest {
         registry.onFailure(SERVER_ID, config);
 
         assertThat(registry.allow(SERVER_ID, config)).isFalse();
-        assertThat(registry.allow(2L, config)).isTrue();
+        assertThat(registry.allow("2", config)).isTrue();
         assertThat(registry.states())
                 .containsEntry(SERVER_ID, CircuitBreakerRegistry.State.OPEN)
-                .containsEntry(2L, CircuitBreakerRegistry.State.CLOSED);
+                .containsEntry("2", CircuitBreakerRegistry.State.CLOSED);
     }
 
     @Test

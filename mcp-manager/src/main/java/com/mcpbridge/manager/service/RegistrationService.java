@@ -16,9 +16,11 @@ import com.mcpbridge.manager.domain.McpTool;
 import com.mcpbridge.manager.domain.OverlayStatus;
 import com.mcpbridge.manager.domain.RegistrationStatus;
 import com.mcpbridge.manager.domain.ServerStatus;
+import com.mcpbridge.manager.domain.ServerUpstream;
 import com.mcpbridge.manager.repository.ApiRegistrationRepository;
 import com.mcpbridge.manager.repository.McpServerRepository;
 import com.mcpbridge.manager.repository.McpToolRepository;
+import com.mcpbridge.manager.repository.ServerUpstreamRepository;
 import com.mcpbridge.manager.security.AuthPrincipal;
 import com.mcpbridge.manager.service.parse.DocumentFetcher;
 import com.mcpbridge.manager.service.parse.ParsedApi;
@@ -69,6 +71,7 @@ public class RegistrationService {
     private final ApiRegistrationRepository registrationRepository;
     private final McpServerRepository serverRepository;
     private final McpToolRepository toolRepository;
+    private final ServerUpstreamRepository upstreamRepository;
     private final SwaggerParseService parseService;
     private final DocumentFetcher documentFetcher;
     private final OverlayService overlayService;
@@ -85,6 +88,7 @@ public class RegistrationService {
     public RegistrationService(ApiRegistrationRepository registrationRepository,
                                McpServerRepository serverRepository,
                                McpToolRepository toolRepository,
+                               ServerUpstreamRepository upstreamRepository,
                                SwaggerParseService parseService,
                                DocumentFetcher documentFetcher,
                                OverlayService overlayService,
@@ -96,6 +100,7 @@ public class RegistrationService {
         this.registrationRepository = registrationRepository;
         this.serverRepository = serverRepository;
         this.toolRepository = toolRepository;
+        this.upstreamRepository = upstreamRepository;
         this.parseService = parseService;
         this.documentFetcher = documentFetcher;
         this.overlayService = overlayService;
@@ -113,8 +118,11 @@ public class RegistrationService {
                 ? registrationRepository.findAll(pageable)
                 : registrationRepository.findByDeptIdIn(visible, pageable);
         List<Long> ids = page.getContent().stream().map(ApiRegistration::getId).toList();
-        Map<Long, Long> serverIdByRegistration = serverRepository.findByRegistrationIdIn(ids).stream()
-                .collect(Collectors.toMap(McpServer::getRegistrationId, McpServer::getId, (a, b) -> a));
+        // registration → server 是 N:1（多服务聚合后一个 registration 可能挂多个 server），
+        // 列表页只取第一个 server id 作为跳转入口
+        Map<Long, Long> serverIdByRegistration = new LinkedHashMap<>();
+        serverRepository.findByRegistrationIdIn(ids).forEach(s ->
+                serverIdByRegistration.putIfAbsent(s.getRegistrationId(), s.getId()));
         Map<Long, String> deptNames = departmentService.namesOf();
         return PageView.of(page, r -> toView(r, deptNames.get(r.getDeptId()), serverIdByRegistration.get(r.getId())));
     }
@@ -122,7 +130,9 @@ public class RegistrationService {
     @Transactional(readOnly = true)
     public RegistrationDtos.View view(Long id, AuthPrincipal principal) {
         ApiRegistration registration = require(id, principal);
-        Long serverId = serverRepository.findByRegistrationId(id).map(McpServer::getId).orElse(null);
+        // N:1 后取列表的第一个；单服务场景仍是 1:1
+        Long serverId = serverRepository.findByRegistrationId(id).stream()
+                .map(McpServer::getId).findFirst().orElse(null);
         return toView(registration, departmentService.nameOf(registration.getDeptId()), serverId);
     }
 
@@ -133,11 +143,12 @@ public class RegistrationService {
     public RegistrationDtos.View createByUrl(RegistrationDtos.CreateByUrlRequest request, AuthPrincipal principal) {
         DocumentFetcher.FetchResult fetched = documentFetcher.fetch(request.url());
         return create(request.name(), fetched.body(), DocSource.URL, fetched.url(),
-                request.deptId(), request.pathSegment(), principal);
+                request.deptId(), request.pathSegment(), request.targetServerId(), principal);
     }
 
     public RegistrationDtos.View createByUpload(String name, MultipartFile file, Long deptId,
-                                                String pathSegment, AuthPrincipal principal) {
+                                                String pathSegment, Long targetServerId,
+                                                AuthPrincipal principal) {
         if (file == null || file.isEmpty()) {
             throw PlatformException.validation("请上传接口文档文件", Map.of("field", "file"));
         }
@@ -147,12 +158,13 @@ public class RegistrationService {
         } catch (IOException e) {
             throw new PlatformException(ErrorCode.PARSE_FAILED, "读取上传文件失败", e);
         }
-        return create(name, text, DocSource.FILE, file.getOriginalFilename(), deptId, pathSegment, principal);
+        return create(name, text, DocSource.FILE, file.getOriginalFilename(), deptId, pathSegment, targetServerId, principal);
     }
 
     @Transactional
     public RegistrationDtos.View create(String name, String rawDoc, DocSource source, String sourceRef,
-                                        Long deptId, String pathSegment, AuthPrincipal principal) {
+                                        Long deptId, String pathSegment, Long targetServerId,
+                                        AuthPrincipal principal) {
         String trimmedName = name == null ? null : name.trim();
         if (trimmedName == null || trimmedName.isEmpty()) {
             throw PlatformException.validation("服务名不能为空", Map.of("field", "name"));
@@ -200,7 +212,7 @@ public class RegistrationService {
 
         McpServer server = null;
         if (saved.getStatus() == RegistrationStatus.READY) {
-            server = createServerAndTools(saved, api, pathSegment, principal);
+            server = createServerAndTools(saved, api, pathSegment, targetServerId, principal);
         } else {
             log.warn("注册解析存在 ERROR 级诊断，未生成 MCP Server：registrationId={}", saved.getId());
         }
@@ -219,36 +231,81 @@ public class RegistrationService {
     }
 
     private McpServer createServerAndTools(ApiRegistration registration, ParsedApi api,
-                                           String requestedSegment, AuthPrincipal principal) {
-        String seed = registration.getName() + "#" + registration.getId();
-        String segment = requestedSegment != null && !requestedSegment.isBlank()
-                ? pathSegmentGuard.requireAvailable(requestedSegment, null)
-                : pathSegmentGuard.derive(api.title(), seed);
+                                           String requestedSegment, Long targetServerId,
+                                           AuthPrincipal principal) {
+        // 多服务聚合：targetServerId 非空时挂到已有 Server（只建 upstream + tool），否则新建 Server
+        McpServer saved;
+        String segment;
+        if (targetServerId != null) {
+            McpServer existing = serverRepository.findById(targetServerId)
+                    .orElseThrow(() -> PlatformException.notFound("MCP Server", targetServerId));
+            departmentScope.requireAccess(existing.getDeptId(), principal);
+            if (!existing.getDeptId().equals(registration.getDeptId())) {
+                throw PlatformException.validation("目标 Server 与注册不属于同一部门，无法聚合",
+                        Map.of("serverDeptId", existing.getDeptId(), "registrationDeptId", registration.getDeptId()));
+            }
+            saved = existing;
+            segment = existing.getPathSegment();
+            // 空 Server 的首份注册回填为「主 registration」（registration_id 可为 NULL）
+            if (existing.getRegistrationId() == null) {
+                existing.setRegistrationId(registration.getId());
+            }
+        } else {
+            String seed = registration.getName() + "#" + registration.getId();
+            segment = requestedSegment != null && !requestedSegment.isBlank()
+                    ? pathSegmentGuard.requireAvailable(requestedSegment, null)
+                    : pathSegmentGuard.derive(api.title(), seed);
 
-        McpServer server = new McpServer();
-        server.setDeptId(registration.getDeptId());
-        server.setRegistrationId(registration.getId());
-        server.setProtocolVersion(McpProtocol.SUPPORTED_VERSION);
-        server.setStatus(ServerStatus.DRAFT);
-        server.setCreatedBy(principal.userId());
-        server.setListTtlMs(McpProtocol.DEFAULT_LIST_TTL_MS);
-        overlayService.writeBaseModel(server, new OverlayService.ServerBase(
-                api.title(), api.title(), api.description(), api.version(), segment, api.baseUrls()));
-        overlayService.applyServerOverlay(server);
-        // 初始上游配置直接采用文档声明的地址；没有声明则为空，发布前的校验会拦住（PUB-01）
-        server.setUpstream(Json.write(UpstreamSnapshot.defaults(api.baseUrls())));
-        server.setAuthD(Json.write(AuthDSnapshot.none()));
-        McpServer saved = serverRepository.save(server);
+            McpServer server = new McpServer();
+            server.setDeptId(registration.getDeptId());
+            server.setRegistrationId(registration.getId());
+            server.setProtocolVersion(McpProtocol.SUPPORTED_VERSION);
+            server.setStatus(ServerStatus.DRAFT);
+            server.setCreatedBy(principal.userId());
+            server.setListTtlMs(McpProtocol.DEFAULT_LIST_TTL_MS);
+            overlayService.writeBaseModel(server, new OverlayService.ServerBase(
+                    api.title(), api.title(), api.description(), api.version(), segment, List.of()));
+            overlayService.applyServerOverlay(server);
+            server.setAuthD(Json.write(AuthDSnapshot.none()));
+            saved = serverRepository.save(server);
+        }
 
-        int order = 0;
+        // 为本份 Swagger 创建独立的 upstream（多服务支持）
+        String serviceId = String.valueOf(registration.getId());
+        ServerUpstream upstream = new ServerUpstream();
+        upstream.setServerId(saved.getId());
+        upstream.setServiceId(serviceId);
+        upstream.setName(truncate(api.title(), 128));
+        UpstreamSnapshot defaults = UpstreamSnapshot.defaults(api.baseUrls());
+        upstream.setBaseUrls(Json.write(defaults.baseUrls()));
+        upstream.setLbStrategy(defaults.lbStrategy().name());
+        upstream.setConnectTimeout(defaults.connectTimeoutMs());
+        upstream.setReadTimeout(defaults.readTimeoutMs());
+        upstream.setRetries(defaults.retries());
+        upstream.setRetryOnStatus(Json.MAPPER.valueToTree(defaults.retryOnStatus()).toString());
+        upstream.setCircuitBreaker(Json.MAPPER.valueToTree(defaults.circuitBreaker()).toString());
+        upstreamRepository.save(upstream);
+
+        // 跨服务全局 tool 名集合（从该 Server 已有 tool 收集）
+        List<McpTool> existing = toolRepository.findByServerIdOrderBySortOrderAsc(saved.getId());
+        Set<String> usedNames = new LinkedHashSet<>();
+        existing.forEach(t -> usedNames.add(t.getBaseName()));
+
+        int order = existing.stream().mapToInt(McpTool::getSortOrder).max().orElse(-1) + 1;
         List<McpTool> tools = new ArrayList<>(api.operations().size());
         for (ParsedOperation operation : api.operations()) {
+            // 多服务场景：tool 名带服务前缀（<serviceId>_<baseName>）避免跨服务同名冲突
+            String rawName = ToolNames.derive(operation.name(), operation.method(), operation.path());
+            String prefixed = ToolNames.withServicePrefix(serviceId, rawName);
+            String uniqueName = ToolNames.unique(prefixed, usedNames);
+            usedNames.add(uniqueName);
+
             McpTool tool = new McpTool();
             tool.setServerId(saved.getId());
             tool.setAnchor(truncate(operation.anchor(), 512));
             tool.setMethod(operation.method());
             tool.setPath(truncate(operation.path(), 512));
-            tool.setBaseName(operation.name());
+            tool.setBaseName(uniqueName);
             tool.setBaseSummary(truncate(operation.summary(), SUMMARY_MAX));
             tool.setBaseDescription(truncate(operation.description(), DESCRIPTION_MAX));
             tool.setBaseInputSchema(Json.write(operation.inputSchema()));
@@ -257,6 +314,8 @@ public class RegistrationService {
             tool.setIdempotent(operation.idempotent());
             tool.setStreaming(operation.streaming());
             tool.setStreamFormat(operation.streamFormat());
+            // 自动绑定本份 Swagger 对应的 upstream
+            tool.setUpstreamRef(serviceId);
             tool.setEnabled(true);
             tool.setOverlayStatus(OverlayStatus.NONE);
             tool.setSortOrder(order++);
@@ -298,8 +357,21 @@ public class RegistrationService {
     public RegistrationDtos.DiffReport doReimport(Long registrationId, String rawDoc, AuthPrincipal principal) {
         ApiRegistration registration = require(registrationId, principal);
         ParsedApi api = parseService.parse(rawDoc);
-        McpServer server = serverRepository.findByRegistrationId(registration.getId())
+        // N:1 后取第一个（一份 Swagger 对应一个 Server；聚合多个 Swagger 到同一 Server 是另一个流程）
+        McpServer server = serverRepository.findByRegistrationId(registration.getId()).stream()
+                .findFirst()
                 .orElseThrow(() -> PlatformException.notFound("MCP Server", registration.getId()));
+        // 本份 Swagger 对应的 upstream（serviceId = registrationId 字符串）
+        String serviceId = String.valueOf(registration.getId());
+        ServerUpstream upstream = upstreamRepository.findByServerIdAndServiceId(server.getId(), serviceId)
+                .orElseGet(() -> {
+                    ServerUpstream u = new ServerUpstream();
+                    u.setServerId(server.getId());
+                    u.setServiceId(serviceId);
+                    u.setName(truncate(api.title(), 128));
+                    return u;
+                });
+
         List<McpTool> existing = toolRepository.findByServerIdOrderBySortOrderAsc(server.getId());
         Map<String, McpTool> byAnchor = new LinkedHashMap<>();
         existing.forEach(t -> byAnchor.put(t.getAnchor(), t));
@@ -322,7 +394,10 @@ public class RegistrationService {
                 created.setAnchor(truncate(operation.anchor(), 512));
                 created.setMethod(operation.method());
                 created.setPath(truncate(operation.path(), 512));
-                created.setBaseName(ToolNames.unique(operation.name(), usedNames));
+                // 新增接口带服务前缀避免跨服务同名冲突
+                String rawName = ToolNames.derive(operation.name(), operation.method(), operation.path());
+                String prefixed = ToolNames.withServicePrefix(serviceId, rawName);
+                created.setBaseName(ToolNames.unique(prefixed, usedNames));
                 usedNames.add(created.getBaseName());
                 created.setBaseSummary(truncate(operation.summary(), SUMMARY_MAX));
                 created.setBaseDescription(truncate(operation.description(), DESCRIPTION_MAX));
@@ -332,6 +407,7 @@ public class RegistrationService {
                 created.setIdempotent(operation.idempotent());
                 created.setStreaming(operation.streaming());
                 created.setStreamFormat(operation.streamFormat());
+                created.setUpstreamRef(serviceId);
                 // 新增接口默认不启用：由开发者确认后再开，避免上游变更直接把新接口暴露出去
                 created.setEnabled(false);
                 created.setOverlayStatus(OverlayStatus.NONE);
@@ -351,6 +427,7 @@ public class RegistrationService {
             tool.setIdempotent(operation.idempotent());
             tool.setStreaming(operation.streaming());
             tool.setStreamFormat(operation.streamFormat());
+            // tool 归属不变（upstreamRef 已在首次注册时绑定）
             toSave.add(tool);
         }
 
@@ -376,11 +453,20 @@ public class RegistrationService {
         String currentSegment = overlayService.baseOf(server).pathSegment();
         overlayService.writeBaseModel(server, new OverlayService.ServerBase(
                 api.title(), api.title(), api.description(), api.version(),
-                currentSegment, api.baseUrls()));
+                currentSegment, List.of()));
         overlayService.applyServerOverlay(server);
+        // 同步本份 Swagger 对应 upstream 的 baseUrls（仅在用户未改过时；DRAFT 状态视为未改）
         if (server.getStatus() == ServerStatus.DRAFT) {
-            // 仅在用户尚未配置上游时同步文档声明的地址，避免覆盖人工配置
-            server.setUpstream(Json.write(UpstreamSnapshot.defaults(api.baseUrls())));
+            UpstreamSnapshot defaults = UpstreamSnapshot.defaults(api.baseUrls());
+            upstream.setBaseUrls(Json.write(defaults.baseUrls()));
+            upstream.setLbStrategy(defaults.lbStrategy().name());
+            upstream.setConnectTimeout(defaults.connectTimeoutMs());
+            upstream.setReadTimeout(defaults.readTimeoutMs());
+            upstream.setRetries(defaults.retries());
+            upstream.setRetryOnStatus(Json.MAPPER.valueToTree(defaults.retryOnStatus()).toString());
+            upstream.setCircuitBreaker(Json.MAPPER.valueToTree(defaults.circuitBreaker()).toString());
+            upstream.setName(truncate(api.title(), 128));
+            upstreamRepository.save(upstream);
         }
         server.setOverlayVersion(server.getOverlayVersion() + 1);
         serverRepository.save(server);

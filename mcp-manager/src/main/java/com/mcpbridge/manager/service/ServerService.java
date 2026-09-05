@@ -7,6 +7,7 @@ import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.snapshot.UpstreamSnapshot;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.PathSegments;
+import com.mcpbridge.manager.domain.AccessStatus;
 import com.mcpbridge.manager.domain.AuditAction;
 import com.mcpbridge.manager.domain.BindingState;
 import com.mcpbridge.manager.domain.ExecutorCluster;
@@ -57,6 +58,8 @@ public class ServerService {
     private final McpToolRepository toolRepository;
     private final PublishBindingRepository bindingRepository;
     private final ExecutorClusterRepository clusterRepository;
+    private final com.mcpbridge.manager.repository.ServerUpstreamRepository upstreamRepository;
+    private final com.mcpbridge.manager.repository.ServerAccessRepository accessRepository;
     private final AuthConfigService authConfigService;
     private final OverlayService overlayService;
     private final PathSegmentGuard pathSegmentGuard;
@@ -68,6 +71,8 @@ public class ServerService {
                          McpToolRepository toolRepository,
                          PublishBindingRepository bindingRepository,
                          ExecutorClusterRepository clusterRepository,
+                         com.mcpbridge.manager.repository.ServerUpstreamRepository upstreamRepository,
+                         com.mcpbridge.manager.repository.ServerAccessRepository accessRepository,
                          AuthConfigService authConfigService,
                          OverlayService overlayService,
                          PathSegmentGuard pathSegmentGuard,
@@ -78,6 +83,8 @@ public class ServerService {
         this.toolRepository = toolRepository;
         this.bindingRepository = bindingRepository;
         this.clusterRepository = clusterRepository;
+        this.upstreamRepository = upstreamRepository;
+        this.accessRepository = accessRepository;
         this.authConfigService = authConfigService;
         this.overlayService = overlayService;
         this.pathSegmentGuard = pathSegmentGuard;
@@ -94,7 +101,7 @@ public class ServerService {
         Page<McpServer> page = visible == null
                 ? serverRepository.findAll(pageable)
                 : serverRepository.findByDeptIdIn(visible, pageable);
-        Map<Long, ServerDtos.ServerView> views = toViews(page.getContent());
+        Map<Long, ServerDtos.ServerView> views = toViews(page.getContent(), principal);
         return new PageView<>(
                 page.getContent().stream().map(s -> views.get(s.getId())).toList(),
                 page.getTotalElements(), page.getNumber(), page.getSize(), page.getTotalPages());
@@ -102,20 +109,44 @@ public class ServerService {
 
     @Transactional(readOnly = true)
     public ServerDtos.ServerView view(Long id, AuthPrincipal principal) {
-        McpServer server = requireServer(id, principal);
-        return toViews(List.of(server)).get(server.getId());
+        McpServer server = requireRead(id, principal);
+        ServerDtos.ServerView view = toViews(List.of(server), principal).get(server.getId());
+        // 跨部门只读授权：敏感内容（端点/绑定/上行下行凭据/上游地址）在组视图后脱敏
+        return view.manageable() ? view : sanitizeForGrantedRead(view);
     }
 
+    /**
+     * 管理权校验（跨部门只读拆分后，写操作与凭据读取走这里）：仅本部门树内或平台管理员。
+     * 与旧 requireServer 语义一致；403 而非 404，避免掩盖存在性。
+     */
     @Transactional(readOnly = true)
-    public McpServer requireServer(Long id, AuthPrincipal principal) {
+    public McpServer requireManage(Long id, AuthPrincipal principal) {
         McpServer server = serverRepository.findById(id).orElseThrow(() -> PlatformException.notFound("MCP Server", id));
         departmentScope.requireAccess(server.getDeptId(), principal);
         return server;
     }
 
+    /**
+     * 读权校验：管理权（本部门树/管理员）之外，放行持有 APPROVED 跨部门授权的部门成员。
+     * 授权覆盖部门子树：grant.dept ∈ 祖先链(principal.deptId) 即命中。
+     */
+    @Transactional(readOnly = true)
+    public McpServer requireRead(Long id, AuthPrincipal principal) {
+        McpServer server = serverRepository.findById(id).orElseThrow(() -> PlatformException.notFound("MCP Server", id));
+        if (departmentScope.canAccess(server.getDeptId(), principal)) {
+            return server;
+        }
+        boolean granted = accessRepository.existsByServerIdAndDeptIdInAndStatus(
+                id, departmentScope.deptChainToRoot(principal.deptId()), AccessStatus.APPROVED);
+        if (!granted) {
+            throw PlatformException.forbidden("无权访问该 Server（可发起跨部门访问申请，需资源方授权）");
+        }
+        return server;
+    }
+
     @Transactional(readOnly = true)
     public List<ServerDtos.ToolView> tools(Long serverId, AuthPrincipal principal) {
-        requireServer(serverId, principal);
+        requireRead(serverId, principal);
         return toolRepository.findByServerIdOrderBySortOrderAsc(serverId).stream()
                 .map(overlayService::toToolView)
                 .toList();
@@ -124,14 +155,14 @@ public class ServerService {
     /** 「原始 vs 生效」差异视图（BR-2 要求 UI 必须提供）。 */
     @Transactional(readOnly = true)
     public ServerDtos.DiffView diff(Long serverId, AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         return overlayService.diff(server, toolRepository.findByServerIdOrderBySortOrderAsc(serverId));
     }
 
     /** 运行时生效模型预览：Executor 发布后将加载的内容（不含任何凭据）。 */
     @Transactional(readOnly = true)
     public ServerDtos.EffectiveModelView effectiveModel(Long serverId, AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         List<ToolSnapshot> tools = toolRepository.findByServerIdOrderBySortOrderAsc(serverId).stream()
                 .filter(McpTool::isEnabled)
                 .map(overlayService::toSnapshot)
@@ -144,10 +175,46 @@ public class ServerService {
 
     // ------------------------------------------------------------------ 写入
 
+    /** 新建空 MCP Server（先建基础信息，再在该 Server 下注册多份 Swagger 文档）。 */
+    @Transactional
+    public ServerDtos.ServerView create(ServerDtos.ServerCreateRequest request, AuthPrincipal principal) {
+        String name = request.name() == null ? null : request.name().trim();
+        if (name == null || name.isEmpty()) {
+            throw PlatformException.validation("Server 名称不能为空", Map.of("field", "name"));
+        }
+        Long ownerDeptId = request.deptId() != null ? request.deptId() : principal.deptId();
+        if (ownerDeptId == null) {
+            throw PlatformException.validation("必须指定归属部门", Map.of("field", "deptId"));
+        }
+        departmentScope.requireAccess(ownerDeptId, principal);
+        departmentService.require(ownerDeptId);
+
+        String seed = name + "#" + System.currentTimeMillis();
+        String segment = request.pathSegment() != null && !request.pathSegment().isBlank()
+                ? pathSegmentGuard.requireAvailable(request.pathSegment(), null)
+                : pathSegmentGuard.derive(name, seed);
+
+        McpServer server = new McpServer();
+        server.setDeptId(ownerDeptId);
+        // 空 Server 还没有挂任何 registration，置 NULL（占位 0 会违反 FK→api_registration）
+        server.setProtocolVersion(com.mcpbridge.common.protocol.McpProtocol.SUPPORTED_VERSION);
+        server.setStatus(ServerStatus.DRAFT);
+        server.setCreatedBy(principal.userId());
+        server.setListTtlMs(com.mcpbridge.common.protocol.McpProtocol.DEFAULT_LIST_TTL_MS);
+        overlayService.writeBaseModel(server, new OverlayService.ServerBase(
+                name, request.title(), request.description(), null, segment, java.util.List.of()));
+        overlayService.applyServerOverlay(server);
+        server.setAuthD(com.mcpbridge.common.util.Json.write(com.mcpbridge.common.snapshot.AuthDSnapshot.none()));
+        McpServer saved = serverRepository.save(server);
+        auditService.record(AuditAction.SERVER_UPDATE, "server", saved.getId(), Map.of(
+                "action", "create", "name", name, "pathSegment", segment, "deptId", ownerDeptId));
+        return toViews(List.of(saved), principal).get(saved.getId());
+    }
+
     /** SVR-01：名称 / 展示名 / 描述 / PATH 末段 / list 缓存 TTL。 */
     @Transactional
     public ServerDtos.ServerView update(Long id, ServerDtos.ServerUpdateRequest request, AuthPrincipal principal) {
-        McpServer server = requireServer(id, principal);
+        McpServer server = requireManage(id, principal);
         ObjectNode overlay = overlayService.serverOverlay(server);
         Map<String, Object> changes = new LinkedHashMap<>();
 
@@ -189,13 +256,15 @@ public class ServerService {
                     ? AuditAction.SERVER_PATH_CHANGE : AuditAction.SERVER_UPDATE;
             auditService.record(action, "server", saved.getId(), changes);
         }
-        return toViews(List.of(saved)).get(saved.getId());
+        return toViews(List.of(saved), principal).get(saved.getId());
     }
 
-    /** EXE-03 / EXE-04：上游地址、负载均衡、超时、重试与熔断。 */
+    /** EXE-03 / EXE-04：按 serviceId upsert 单个上游服务的配置。 */
     @Transactional
-    public ServerDtos.ServerView updateUpstream(Long id, ServerDtos.UpstreamRequest request, AuthPrincipal principal) {
-        McpServer server = requireServer(id, principal);
+    public ServerDtos.ServerView upsertUpstream(Long id, ServerDtos.UpstreamEntryRequest request, AuthPrincipal principal) {
+        McpServer server = requireManage(id, principal);
+        String serviceId = request.serviceId() == null || request.serviceId().isBlank()
+                ? "default" : request.serviceId();
         List<String> baseUrls = new ArrayList<>();
         for (String raw : request.baseUrls()) {
             baseUrls.add(requireHttpUrl(raw));
@@ -207,7 +276,7 @@ public class ServerService {
                 orDefault(request.cbFailureThreshold(), 5),
                 orDefault(request.cbOpenMs(), 30_000L),
                 orDefault(request.cbHalfOpenProbes(), 2));
-        UpstreamSnapshot upstream = new UpstreamSnapshot(
+        UpstreamSnapshot config = new UpstreamSnapshot(
                 baseUrls,
                 request.lbStrategy() == null ? UpstreamSnapshot.LbStrategy.ROUND_ROBIN : request.lbStrategy(),
                 List.of(),
@@ -216,26 +285,46 @@ public class ServerService {
                 orDefault(request.retries(), 1),
                 request.retryOnStatus() == null ? List.of(502, 503, 504) : request.retryOnStatus(),
                 circuitBreaker);
-        server.setUpstream(Json.write(upstream));
+
+        // upsert：serviceId 存在则更新，否则新增
+        com.mcpbridge.manager.domain.ServerUpstream upstream = upstreamRepository
+                .findByServerIdAndServiceId(server.getId(), serviceId)
+                .orElseGet(() -> {
+                    com.mcpbridge.manager.domain.ServerUpstream u = new com.mcpbridge.manager.domain.ServerUpstream();
+                    u.setServerId(server.getId());
+                    u.setServiceId(serviceId);
+                    return u;
+                });
+        upstream.setName(truncate(request.name(), 128) == null ? serviceId : truncate(request.name(), 128));
+        upstream.setBaseUrls(Json.write(config.baseUrls()));
+        upstream.setLbStrategy(config.lbStrategy().name());
+        upstream.setConnectTimeout(config.connectTimeoutMs());
+        upstream.setReadTimeout(config.readTimeoutMs());
+        upstream.setRetries(config.retries());
+        upstream.setRetryOnStatus(Json.MAPPER.valueToTree(config.retryOnStatus()).toString());
+        upstream.setCircuitBreaker(Json.MAPPER.valueToTree(config.circuitBreaker()).toString());
+        upstreamRepository.save(upstream);
+
         if (server.getStatus() == ServerStatus.DRAFT) {
             server.setStatus(ServerStatus.CONFIGURED);
         }
         McpServer saved = serverRepository.save(server);
         auditService.record(AuditAction.SERVER_UPDATE, "server", saved.getId(), Map.of(
                 "upstream", Map.of(
+                        "serviceId", serviceId,
                         "baseUrls", baseUrls,
-                        "lbStrategy", upstream.lbStrategy().name(),
-                        "connectTimeoutMs", upstream.connectTimeoutMs(),
-                        "readTimeoutMs", upstream.readTimeoutMs(),
-                        "retries", upstream.retries())));
-        return toViews(List.of(saved)).get(saved.getId());
+                        "lbStrategy", config.lbStrategy().name(),
+                        "connectTimeoutMs", config.connectTimeoutMs(),
+                        "readTimeoutMs", config.readTimeoutMs(),
+                        "retries", config.retries())));
+        return toViews(List.of(saved), principal).get(saved.getId());
     }
 
     /** SVR-02：单个 Tool 的覆盖编辑。 */
     @Transactional
     public ServerDtos.ToolView updateToolOverlay(Long serverId, Long toolId,
                                                  ServerDtos.ToolOverlayRequest request, AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         McpTool tool = requireTool(serverId, toolId);
         ObjectNode overlay = overlayService.toolOverlay(tool);
         Map<String, Object> changes = new LinkedHashMap<>();
@@ -287,7 +376,7 @@ public class ServerService {
     /** SVR-02：清除某个 Tool 的全部覆盖，回落到基座值。 */
     @Transactional
     public ServerDtos.ToolView resetToolOverlay(Long serverId, Long toolId, AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         McpTool tool = requireTool(serverId, toolId);
         tool.setOverlay(null);
         tool.setOverlayStatus(OverlayStatus.NONE);
@@ -302,7 +391,7 @@ public class ServerService {
     @Transactional
     public List<ServerDtos.ToolView> batchToggle(Long serverId, ServerDtos.ToolBatchToggleRequest request,
                                                  AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         List<McpTool> tools = toolRepository.findAllById(request.toolIds());
         List<McpTool> mismatched = tools.stream().filter(t -> !serverId.equals(t.getServerId())).toList();
         if (!mismatched.isEmpty()) {
@@ -332,7 +421,7 @@ public class ServerService {
 
     @Transactional(readOnly = true)
     public List<PublishDtos.BindingView> bindings(Long serverId, AuthPrincipal principal) {
-        McpServer server = requireServer(serverId, principal);
+        McpServer server = requireManage(serverId, principal);
         Map<Long, ExecutorCluster> clusters = clusterIndex();
         return bindingRepository.findByServerIdOrderByIdDesc(serverId).stream()
                 .map(b -> toBindingView(b, server, clusters.get(b.getClusterId())))
@@ -362,18 +451,91 @@ public class ServerService {
                 toolCountOf(binding));
     }
 
-    /** 读取 Server 的上游策略；未配置时给出默认值。 */
-    public UpstreamSnapshot upstreamOf(McpServer server) {
-        String json = server.getUpstream();
-        if (json == null || json.isBlank()) {
-            return UpstreamSnapshot.defaults(List.of());
+    /** 读取 Server 的所有上游服务视图（多服务支持）；无配置时返回空列表。 */
+    public List<ServerDtos.UpstreamView> upstreamViewsOf(McpServer server) {
+        return upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId()).stream()
+                .map(u -> new ServerDtos.UpstreamView(
+                        u.getServiceId(),
+                        u.getName(),
+                        toUpstreamSnapshot(u),
+                        null,  // authB 视图后续按需填充
+                        u.getUpdatedAt()))
+                .toList();
+    }
+
+    /** 删除某个上游服务配置（多服务场景下移除一份 Swagger 的上游）。 */
+    @Transactional
+    public ServerDtos.ServerView deleteUpstream(Long id, String serviceId, AuthPrincipal principal) {
+        McpServer server = requireManage(id, principal);
+        com.mcpbridge.manager.domain.ServerUpstream upstream = upstreamRepository
+                .findByServerIdAndServiceId(server.getId(), serviceId)
+                .orElseThrow(() -> PlatformException.notFound("上游服务 " + serviceId, id));
+        upstreamRepository.delete(upstream);
+        auditService.record(AuditAction.SERVER_UPDATE, "server", server.getId(), Map.of(
+                "deletedUpstream", serviceId));
+        return toViews(List.of(serverRepository.save(server)), principal).get(id);
+    }
+
+    /** 读取 Server 的所有上游快照（Executor 装配用）。 */
+    public List<UpstreamSnapshot> upstreamConfigsOf(McpServer server) {
+        return upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId()).stream()
+                .map(this::toUpstreamSnapshot)
+                .toList();
+    }
+
+    /** 读取 Server 的所有上游 Entry（含 serviceId / name / config / authB），快照装配用。 */
+    public List<com.mcpbridge.common.snapshot.UpstreamEntry> upstreamEntriesOf(McpServer server) {
+        return upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId()).stream()
+                .map(u -> com.mcpbridge.common.snapshot.UpstreamEntry.of(
+                        u.getServiceId(),
+                        u.getName(),
+                        toUpstreamSnapshot(u),
+                        readAuthB(u.getAuthB())))
+                .toList();
+    }
+
+    private com.mcpbridge.common.snapshot.AuthBSnapshot readAuthB(String json) {
+        if (json == null || json.isBlank()) return null;
+        try { return Json.read(json, com.mcpbridge.common.snapshot.AuthBSnapshot.class); }
+        catch (RuntimeException e) { return null; }
+    }
+
+    private UpstreamSnapshot toUpstreamSnapshot(com.mcpbridge.manager.domain.ServerUpstream u) {
+        List<String> baseUrls = readStringList(u.getBaseUrls());
+        UpstreamSnapshot.LbStrategy lb = UpstreamSnapshot.LbStrategy.ROUND_ROBIN;
+        if (u.getLbStrategy() != null) {
+            try { lb = UpstreamSnapshot.LbStrategy.valueOf(u.getLbStrategy()); } catch (IllegalArgumentException ignore) {}
         }
-        try {
-            UpstreamSnapshot upstream = Json.read(json, UpstreamSnapshot.class);
-            return upstream == null ? UpstreamSnapshot.defaults(List.of()) : upstream;
-        } catch (RuntimeException e) {
-            return UpstreamSnapshot.defaults(List.of());
+        UpstreamSnapshot.CircuitBreaker cb = UpstreamSnapshot.CircuitBreaker.defaults();
+        if (u.getCircuitBreaker() != null && !u.getCircuitBreaker().isBlank()) {
+            try { cb = Json.read(u.getCircuitBreaker(), UpstreamSnapshot.CircuitBreaker.class); } catch (RuntimeException ignore) {}
         }
+        return new UpstreamSnapshot(
+                baseUrls,
+                lb,
+                readIntegerList(u.getWeights()),
+                u.getConnectTimeout(),
+                u.getReadTimeout(),
+                u.getRetries(),
+                readIntegerList(u.getRetryOnStatus()).isEmpty() ? List.of(502, 503, 504) : readIntegerList(u.getRetryOnStatus()),
+                cb);
+    }
+
+    private List<String> readStringList(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try { return Json.read(json, new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {}); }
+        catch (RuntimeException e) { return List.of(); }
+    }
+
+    private List<Integer> readIntegerList(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try { return Json.read(json, new com.fasterxml.jackson.core.type.TypeReference<List<Integer>>() {}); }
+        catch (RuntimeException e) { return List.of(); }
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return null;
+        return s.length() <= max ? s : s.substring(0, max);
     }
 
     public String endpointTemplate(ExecutorCluster cluster) {
@@ -385,7 +547,7 @@ public class ServerService {
 
     // ------------------------------------------------------------------ 内部工具
 
-    private Map<Long, ServerDtos.ServerView> toViews(List<McpServer> servers) {
+    private Map<Long, ServerDtos.ServerView> toViews(List<McpServer> servers, AuthPrincipal principal) {
         if (servers.isEmpty()) {
             return Map.of();
         }
@@ -401,7 +563,10 @@ public class ServerService {
         Map<Long, ServerDtos.ServerView> result = new LinkedHashMap<>();
         for (McpServer server : servers) {
             List<McpTool> tools = toolsByServer.getOrDefault(server.getId(), List.of());
-            List<PublishBinding> bindings = bindingsByServer.getOrDefault(server.getId(), List.of());
+            // getOrDefault 的兜底是共享不可变 List.of()，不能原地 sort；
+            // 拷贝成可变列表（无绑定的新 Server 走这里，曾在 create 后抛 UnsupportedOperationException）
+            List<PublishBinding> bindings = new ArrayList<>(
+                    bindingsByServer.getOrDefault(server.getId(), List.of()));
             bindings.sort(Comparator.comparing(PublishBinding::getId).reversed());
             List<PublishDtos.BindingView> bindingViews = bindings.stream()
                     .map(b -> toBindingView(b, server, clusters.get(b.getClusterId())))
@@ -412,6 +577,7 @@ public class ServerService {
                     .map(b -> clusters.get(b.getClusterId()))
                     .map(c -> PathSegments.endpoint(c.getEntrypoint(), c.getPathPrefix(), server.getPathSegment()))
                     .orElse(null);
+            boolean manageable = departmentScope.canAccess(server.getDeptId(), principal);
             result.put(server.getId(), new ServerDtos.ServerView(
                     server.getId(),
                     server.getName(),
@@ -429,14 +595,34 @@ public class ServerService {
                     tools.size(),
                     tools.stream().filter(McpTool::isEnabled).count(),
                     server.getListTtlMs(),
-                    upstreamOf(server),
+                    upstreamViewsOf(server),
                     authBViews.getOrDefault(server.getId(), AuthConfigService.emptyAuthBView()),
                     authConfigService.authDView(server),
                     bindingViews,
                     server.getCreatedAt(),
-                    server.getUpdatedAt()));
+                    server.getUpdatedAt(),
+                    manageable));
         }
         return result;
+    }
+
+    /**
+     * 跨部门只读脱敏：丢弃端点、绑定、Auth-B/Auth-D、上游地址与上游鉴权，
+     * 只保留基本信息与统计。manageable=false 的 ServerView 必须过这道门才能出网。
+     */
+    private ServerDtos.ServerView sanitizeForGrantedRead(ServerDtos.ServerView v) {
+        List<ServerDtos.UpstreamView> upstreams = v.upstreams().stream()
+                .map(u -> new ServerDtos.UpstreamView(u.serviceId(), u.name(), null, null, null))
+                .toList();
+        return new ServerDtos.ServerView(
+                v.id(), v.name(), v.title(), v.description(), v.pathSegment(),
+                null,
+                v.version(), v.protocolVersion(), v.status(), v.overlayVersion(),
+                v.deptId(), v.deptName(), v.registrationId(),
+                v.toolCount(), v.enabledToolCount(), v.listTtlMs(),
+                upstreams, null, null, List.of(),
+                v.createdAt(), v.updatedAt(),
+                false);
     }
 
     private Map<Long, ExecutorCluster> clusterIndex() {

@@ -147,13 +147,15 @@ class SnapshotStoreTest {
 
     private static ToolSnapshot tool(String name) {
         return new ToolSnapshot(name, null, null, "GET", "/x", "GET /x",
-                null, Map.of(), false, false, null, true, null);
+                null, Map.of(), false, false, null, true, "default", null);
     }
 
     private static ServerSnapshot server(long serverId, String pathSegment, ToolSnapshot... tools) {
         return new ServerSnapshot(serverId, 1L, "svc-" + serverId, pathSegment, "标题", null, "1.0",
                 McpProtocol.SUPPORTED_VERSION, 1L, "http://gw.local/mcp/" + pathSegment,
-                null, null, UpstreamSnapshot.defaults(List.of("http://up.local")),
+                null, null,
+                List.of(com.mcpbridge.common.snapshot.UpstreamEntry.single("default",
+                        UpstreamSnapshot.defaults(List.of("http://up.local")))),
                 List.of(tools), List.of(), List.of(), 30_000,
                 Instant.parse("2026-09-03T00:00:00Z"));
     }

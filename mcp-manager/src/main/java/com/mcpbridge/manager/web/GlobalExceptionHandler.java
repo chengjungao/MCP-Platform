@@ -119,12 +119,22 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ErrorCode.FORBIDDEN, "缺少权限或跨部门越权", null));
     }
 
-    /** 唯一键冲突等：翻译成 409，比裸 500 更能指导用户（例如 PATH 末段重复）。 */
+    /** 完整性约束冲突：翻译成 409，并按约束类型区分提示（PostgreSQL 错误消息关键词）。 */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleIntegrity(DataIntegrityViolationException e) {
-        log.warn("数据完整性约束冲突：{}", e.getMostSpecificCause().getMessage());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ErrorCode.CONFLICT,
-                "数据冲突：唯一约束被违反，请检查名称 / PATH 末段 / 编码是否重复", null));
+        String cause = String.valueOf(e.getMostSpecificCause().getMessage());
+        log.warn("数据完整性约束冲突：{}", cause);
+        String message;
+        if (cause.contains("violates foreign key")) {
+            message = "数据冲突：引用的数据不存在或已被删除，请刷新后重试";
+        } else if (cause.contains("violates not-null")) {
+            message = "数据冲突：必填字段缺失";
+        } else if (cause.contains("violates unique") || cause.contains("duplicate key")) {
+            message = "数据冲突：唯一约束被违反，请检查名称 / PATH 末段 / 编码是否重复";
+        } else {
+            message = "数据冲突：完整性约束校验未通过";
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ErrorCode.CONFLICT, message, null));
     }
 
     @ExceptionHandler(Exception.class)

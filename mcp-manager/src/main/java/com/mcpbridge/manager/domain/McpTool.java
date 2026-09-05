@@ -65,6 +65,10 @@ public class McpTool extends BaseEntity {
     @Column(name = "stream_format", length = 16)
     private String streamFormat;
 
+    /** 指向 server_upstream.service_id，注册时自动绑定（tool 按此选所属上游）。 */
+    @Column(name = "upstream_ref", length = 64)
+    private String upstreamRef;
+
     @Column(nullable = false)
     private boolean enabled = true;
 
@@ -106,6 +110,8 @@ public class McpTool extends BaseEntity {
     public void setStreaming(boolean streaming) { this.streaming = streaming; }
     public String getStreamFormat() { return streamFormat; }
     public void setStreamFormat(String streamFormat) { this.streamFormat = streamFormat; }
+    public String getUpstreamRef() { return upstreamRef; }
+    public void setUpstreamRef(String upstreamRef) { this.upstreamRef = upstreamRef; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getOverlay() { return overlay; }

@@ -6,6 +6,7 @@ import com.mcpbridge.common.error.PlatformException;
 import com.mcpbridge.common.protocol.McpProtocol;
 import com.mcpbridge.common.snapshot.PublishedSnapshot;
 import com.mcpbridge.common.snapshot.ServerSnapshot;
+import com.mcpbridge.common.snapshot.UpstreamSnapshot;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.PathSegments;
 import com.mcpbridge.manager.domain.AuditAction;
@@ -74,7 +75,7 @@ public class PublishService {
     @Transactional
     public PublishDtos.PublishResult publish(Long serverId, PublishDtos.PublishRequest request,
                                              AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(serverId, principal);
+        McpServer server = serverService.requireManage(serverId, principal);
         ExecutorCluster cluster = clusterService.require(request.clusterId());
         clusterService.requirePublishPermission(cluster, server.getDeptId(), principal);
         requirePublishable(server, cluster);
@@ -118,9 +119,16 @@ public class PublishService {
         if (!McpProtocol.isSupported(server.getProtocolVersion())) {
             problems.put("protocolVersion", "Server 协议版本必须是 " + McpProtocol.SUPPORTED_VERSION);
         }
-        List<String> baseUrls = serverService.upstreamOf(server).baseUrls();
-        if (baseUrls == null || baseUrls.isEmpty()) {
-            problems.put("upstream.baseUrls", "尚未配置上游地址，Executor 无法转发调用");
+        // 多上游校验：每个 upstream 的 baseUrls 都不能为空
+        List<UpstreamSnapshot> upstreams = serverService.upstreamConfigsOf(server);
+        if (upstreams.isEmpty()) {
+            problems.put("upstreams", "未配置任何上游服务，Executor 无法转发调用");
+        }
+        for (int i = 0; i < upstreams.size(); i++) {
+            UpstreamSnapshot u = upstreams.get(i);
+            if (u.baseUrls() == null || u.baseUrls().isEmpty()) {
+                problems.put("upstream[" + i + "].baseUrls", "上游服务 baseUrls 为空");
+            }
         }
         long enabledTools = serverService.enabledToolCount(server.getId());
         if (enabledTools == 0) {
@@ -147,7 +155,7 @@ public class PublishService {
 
     @Transactional
     public PublishDtos.PublishResult offline(Long serverId, Long clusterId, AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(serverId, principal);
+        McpServer server = serverService.requireManage(serverId, principal);
         ExecutorCluster cluster = clusterService.require(clusterId);
         clusterService.requirePublishPermission(cluster, server.getDeptId(), principal);
         PublishBinding binding = bindingRepository.findByServerIdAndClusterIdAndCurrentTrue(serverId, clusterId)
@@ -181,7 +189,7 @@ public class PublishService {
     @Transactional
     public PublishDtos.PublishResult rollback(Long serverId, Long clusterId,
                                               PublishDtos.RollbackRequest request, AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(serverId, principal);
+        McpServer server = serverService.requireManage(serverId, principal);
         ExecutorCluster cluster = clusterService.require(clusterId);
         clusterService.requirePublishPermission(cluster, server.getDeptId(), principal);
 
@@ -249,7 +257,7 @@ public class PublishService {
 
     @Transactional(readOnly = true)
     public List<PublishDtos.BindingView> history(Long serverId, Long clusterId, AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(serverId, principal);
+        McpServer server = serverService.requireManage(serverId, principal);
         ExecutorCluster cluster = clusterService.require(clusterId);
         return bindingRepository.findByServerIdAndClusterIdOrderByVersionDesc(serverId, clusterId).stream()
                 .map(b -> serverService.toBindingView(b, server, cluster))

@@ -198,7 +198,9 @@ class RestRequestBuilderTest {
     private static ServerSnapshot server() {
         return new ServerSnapshot(1L, 1L, "order-service", "order", "订单服务", null, "1.0",
                 McpProtocol.SUPPORTED_VERSION, 1L, "http://gw.local/mcp/order",
-                null, null, UpstreamSnapshot.defaults(List.of("http://up.local")),
+                null, null,
+                List.of(com.mcpbridge.common.snapshot.UpstreamEntry.single("default",
+                        UpstreamSnapshot.defaults(List.of("http://up.local")))),
                 List.of(), List.of(), List.of(), 30_000, Instant.parse("2026-09-03T00:00:00Z"));
     }
 
@@ -207,7 +209,7 @@ class RestRequestBuilderTest {
                                      boolean bodyRequired, JsonNode inputSchema) {
         return new ToolSnapshot(name, null, null, method, path, method + " " + path,
                 inputSchema, parameterIn, bodyRequired, false, null,
-                ToolSnapshot.IDEMPOTENT_METHODS.contains(method), null);
+                ToolSnapshot.IDEMPOTENT_METHODS.contains(method), "default", null);
     }
 
     private static JsonNode args(String json) {

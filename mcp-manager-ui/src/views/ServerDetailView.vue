@@ -7,6 +7,7 @@ import AuthBPanel from '@/components/server/AuthBPanel.vue'
 import AuthDPanel from '@/components/server/AuthDPanel.vue'
 import BasicPanel from '@/components/server/BasicPanel.vue'
 import PublishPanel from '@/components/server/PublishPanel.vue'
+import ServerReadonlyPanel from '@/components/server/ServerReadonlyPanel.vue'
 import ToolsPanel from '@/components/server/ToolsPanel.vue'
 import UpstreamPanel from '@/components/server/UpstreamPanel.vue'
 import { notifyError } from '@/api/http'
@@ -40,6 +41,9 @@ function onSaved(updated: ServerView): void {
   server.value = updated
   ElMessage.success('已保存。改动要重新发布后才会被 Executor 加载')
 }
+
+/** 跨部门只读授权（manageable=false）时隐藏全部管理 tab，渲染只读精简视图。 */
+const isReadonly = computed(() => (server.value ? !server.value.manageable : false))
 
 async function copyEndpoint(): Promise<void> {
   const endpoint = server.value?.endpointPreview
@@ -83,33 +87,38 @@ onMounted(() => {
             </p>
           </div>
           <div class="toolbar">
-            <el-button @click="router.push('/servers')">返回列表</el-button>
+            <el-button @click="router.push(isReadonly ? '/access' : '/servers')">
+              {{ isReadonly ? '返回访问申请' : '返回列表' }}
+            </el-button>
             <el-button @click="load">刷新</el-button>
           </div>
         </div>
       </el-card>
 
       <!-- 各面板 lazy：详情页一进来就并发六个请求既慢又会在无权限时刷出一片 403 -->
-      <el-tabs v-model="activeTab" class="tabs">
-        <el-tab-pane label="基本信息" name="basic" lazy>
-          <BasicPanel :server-id="serverId" :server="server" @saved="onSaved" />
-        </el-tab-pane>
-        <el-tab-pane label="上游调用" name="upstream" lazy>
-          <UpstreamPanel :server-id="serverId" :server="server" @saved="onSaved" />
-        </el-tab-pane>
-        <el-tab-pane label="上行授权 Auth-B" name="authb" lazy>
-          <AuthBPanel :server-id="serverId" @changed="load" />
-        </el-tab-pane>
-        <el-tab-pane label="下行授权 Auth-D" name="authd" lazy>
-          <AuthDPanel :server-id="serverId" @changed="load" />
-        </el-tab-pane>
-        <el-tab-pane label="Tool 与覆盖" name="tools" lazy>
-          <ToolsPanel :server-id="serverId" @changed="load" />
-        </el-tab-pane>
-        <el-tab-pane label="差异与发布" name="publish" lazy>
-          <PublishPanel :server-id="serverId" :server="server" @changed="load" />
-        </el-tab-pane>
-      </el-tabs>
+      <template v-if="!isReadonly">
+        <el-tabs v-model="activeTab" class="tabs">
+          <el-tab-pane label="基本信息" name="basic" lazy>
+            <BasicPanel :server-id="serverId" :server="server" @saved="onSaved" />
+          </el-tab-pane>
+          <el-tab-pane label="上游服务" name="upstream" lazy>
+            <UpstreamPanel :server-id="serverId" :server="server" @saved="onSaved" />
+          </el-tab-pane>
+          <el-tab-pane label="上行授权 Auth-B" name="authb" lazy>
+            <AuthBPanel :server-id="serverId" @changed="load" />
+          </el-tab-pane>
+          <el-tab-pane label="下行授权 Auth-D" name="authd" lazy>
+            <AuthDPanel :server-id="serverId" @changed="load" />
+          </el-tab-pane>
+          <el-tab-pane label="Tool 与覆盖" name="tools" lazy>
+            <ToolsPanel :server-id="serverId" @changed="load" />
+          </el-tab-pane>
+          <el-tab-pane label="差异与发布" name="publish" lazy>
+            <PublishPanel :server-id="serverId" :server="server" @changed="load" />
+          </el-tab-pane>
+        </el-tabs>
+      </template>
+      <ServerReadonlyPanel v-else :server-id="serverId" :server="server" />
     </template>
 
     <el-empty v-else-if="!loading" description="Server 不存在，或你所在的部门无权访问它">

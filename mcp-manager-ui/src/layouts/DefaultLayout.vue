@@ -6,12 +6,12 @@ import type { Component } from 'vue'
 import {
   ArrowDown,
   Connection,
-  Document,
   Expand,
   Fold,
   Grid,
   HomeFilled,
   Key,
+  Lock,
   OfficeBuilding,
   Tickets,
   UserFilled
@@ -35,14 +35,17 @@ interface MenuItem {
  */
 const menu: MenuItem[] = [
   { path: '/', title: '概览', icon: HomeFilled },
-  { path: '/registrations', title: '注册与解析', icon: Document, permission: 'registration:read' },
   { path: '/servers', title: 'MCP Server', icon: Grid, permission: 'server:read' },
+  { path: '/access', title: '访问申请', icon: Lock, permission: 'server:read' },
   { path: '/clusters', title: '集群与节点', icon: Connection, permission: 'cluster:read' },
   { path: '/departments', title: '部门', icon: OfficeBuilding, permission: 'dept:read' },
   { path: '/roles', title: '角色权限', icon: Key, permission: 'role:read' },
   { path: '/users', title: '账号', icon: UserFilled, permission: 'user:read' },
   { path: '/audits', title: '审计日志', icon: Tickets, permission: 'audit:read' }
 ]
+// 注册与解析不再作为一级菜单：它是 MCP Server 管理的二级功能，
+// 注册入口在 Server 详情页「上游服务」tab，诊断/原文/重新解析也在那里弹出管理。
+// /registrations 路由保留（URL 直达可作为全局排查视图），只是不进菜单。
 
 const route = useRoute()
 const router = useRouter()

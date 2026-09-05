@@ -46,6 +46,12 @@ public final class AuditAction {
     public static final String NODE_REGISTER = "node.register";
     public static final String NODE_OFFLINE = "node.offline";
 
+    /** 跨部门访问申请与授权（MGM-04 显式授权闭环）。 */
+    public static final String ACCESS_APPLY = "access.apply";
+    public static final String ACCESS_APPROVE = "access.approve";
+    public static final String ACCESS_REJECT = "access.reject";
+    public static final String ACCESS_REVOKE = "access.revoke";
+
     private AuditAction() {
     }
 }

@@ -24,6 +24,8 @@ export interface UploadRegistrationParams {
   file: File
   deptId?: number
   pathSegment?: string
+  /** 挂到已有 MCP Server（多服务聚合）；不传则新建 Server。 */
+  targetServerId?: number
 }
 
 export function createByUpload(
@@ -35,6 +37,7 @@ export function createByUpload(
   form.append('file', params.file)
   if (params.deptId != null) form.append('deptId', String(params.deptId))
   if (params.pathSegment) form.append('pathSegment', params.pathSegment)
+  if (params.targetServerId != null) form.append('targetServerId', String(params.targetServerId))
   return upload<RegistrationView>('/registrations/upload', form, onProgress)
 }
 
@@ -43,11 +46,13 @@ export function createByText(
   name: string,
   rawDoc: string,
   deptId?: number,
-  pathSegment?: string
+  pathSegment?: string,
+  targetServerId?: number
 ): Promise<RegistrationView> {
   const params: Record<string, unknown> = { name }
   if (deptId != null) params.deptId = deptId
   if (pathSegment) params.pathSegment = pathSegment
+  if (targetServerId != null) params.targetServerId = targetServerId
   // by-text 的请求体是裸文本而不是 JSON，必须显式指定 Content-Type，
   // 否则 axios 会把它当字符串体配上 application/json，后端的 consumes 匹配不上直接 415
   return api<RegistrationView>({

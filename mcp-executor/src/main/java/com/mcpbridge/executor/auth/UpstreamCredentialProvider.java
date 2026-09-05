@@ -113,9 +113,16 @@ public class UpstreamCredentialProvider {
     }
 
     static AuthBSnapshot effectiveAuthB(ServerSnapshot server, ToolSnapshot tool) {
+        // 优先级：tool 级覆盖 > upstream 级（服务专属）> server 级（回落默认）
         AuthBSnapshot override = tool == null ? null : tool.authBOverride();
         if (override != null && override.type() != null && override.type() != AuthBSnapshot.Type.NONE) {
             return override;
+        }
+        // 多上游：取 tool 所属 upstream 的 authB（服务专属鉴权）
+        com.mcpbridge.common.snapshot.UpstreamEntry entry = server.effectiveUpstream(tool);
+        if (entry.authB() != null && entry.authB().type() != null
+                && entry.authB().type() != AuthBSnapshot.Type.NONE) {
+            return entry.authB();
         }
         return server.authB();
     }

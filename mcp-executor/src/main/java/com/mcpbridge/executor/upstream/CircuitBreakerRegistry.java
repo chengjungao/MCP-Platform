@@ -10,15 +10,18 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 按 Server 维度的熔断器（EXE-03）。
+ * 按上游服务（serverId:serviceId）维度的熔断器（EXE-03）。
  *
  * <p><b>刻意不做跨节点共享</b>，尽管我们已经有了 Redis。理由是它度量的不是「上游挂了」，
- * 而是「<i>本节点到上游</i>的链路挂了」：Executor-2 到上游专线抖动时，
+ * 而是「<i>本节点到某上游</i>的链路挂了」：Executor-2 到上游专线抖动时，
  * 让 Executor-1 也停止服务只会把局部故障放大成全集群故障。
  * 每个节点独立熔断，负载自然会被上游网关导到健康节点上。
  *
- * <p>用 {@code synchronized} 而不是 CAS 循环：单个 Server 的熔断判定串在一把锁上，
- * 临界区只有几条赋值语句，而它的调用频率上限就是该 Server 的 QPS——
+ * <p><b>多上游隔离</b>：一个 Server 挂多个 REST 服务后，key 改为 {@code serverId:serviceId}
+ * 复合字符串，避免服务 A 连续失败误熔断服务 B（单上游时隐蔽、多上游暴露的缺陷修复）。
+ *
+ * <p>用 {@code synchronized} 而不是 CAS 循环：单个上游的熔断判定串在一把锁上，
+ * 临界区只有几条赋值语句，而它的调用频率上限就是该上游的 QPS——
  * 远达不到需要无锁的程度，而 CAS 版本的状态机正确性要难验证得多。
  */
 @Component
@@ -28,7 +31,7 @@ public class CircuitBreakerRegistry {
 
     public enum State { CLOSED, OPEN, HALF_OPEN }
 
-    private final ConcurrentHashMap<Long, Breaker> breakers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Breaker> breakers = new ConcurrentHashMap<>();
 
     /**
      * 是否放行本次调用。
@@ -36,30 +39,35 @@ public class CircuitBreakerRegistry {
      * <p>OPEN 到期后转 HALF_OPEN 并放行探测；HALF_OPEN 下只放行 {@code halfOpenProbes} 个，
      * 超出的请求继续被拒——不限制探测数量的话，半开等于没熔断。
      */
-    public boolean allow(long serverId, UpstreamSnapshot.CircuitBreaker config) {
-        return breaker(serverId).allow(config);
+    public boolean allow(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+        return breaker(breakerKey).allow(config);
     }
 
-    public void onSuccess(long serverId) {
-        Breaker breaker = breakers.get(serverId);
+    public void onSuccess(String breakerKey) {
+        Breaker breaker = breakers.get(breakerKey);
         if (breaker != null) {
-            breaker.success(serverId);
+            breaker.success(breakerKey);
         }
     }
 
-    public void onFailure(long serverId, UpstreamSnapshot.CircuitBreaker config) {
-        breaker(serverId).failure(serverId, config);
+    public void onFailure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+        breaker(breakerKey).failure(breakerKey, config);
     }
 
     /** 运维视角的状态快照（{@code /executor/status} 用）。 */
-    public Map<Long, State> states() {
-        Map<Long, State> states = new LinkedHashMap<>();
-        breakers.forEach((id, breaker) -> states.put(id, breaker.state()));
+    public Map<String, State> states() {
+        Map<String, State> states = new LinkedHashMap<>();
+        breakers.forEach((key, breaker) -> states.put(key, breaker.state()));
         return states;
     }
 
-    private Breaker breaker(long serverId) {
-        return breakers.computeIfAbsent(serverId, id -> new Breaker());
+    private Breaker breaker(String breakerKey) {
+        return breakers.computeIfAbsent(breakerKey, id -> new Breaker());
+    }
+
+    /** 复合 key 生成：{@code serverId:serviceId}。 */
+    public static String key(long serverId, String serviceId) {
+        return serverId + ":" + (serviceId == null ? "default" : serviceId);
     }
 
     private static final class Breaker {
@@ -90,23 +98,23 @@ public class CircuitBreakerRegistry {
             return true;
         }
 
-        synchronized void success(long serverId) {
+        synchronized void success(String breakerKey) {
             consecutiveFailures = 0;
             if (state != State.CLOSED) {
-                log.info("上游恢复正常，熔断已关闭 serverId={}", serverId);
+                log.info("上游恢复正常，熔断已关闭 key={}", breakerKey);
                 state = State.CLOSED;
                 probes = 0;
             }
         }
 
-        synchronized void failure(long serverId, UpstreamSnapshot.CircuitBreaker config) {
+        synchronized void failure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
             if (state == State.HALF_OPEN) {
-                trip(serverId, config);
+                trip(breakerKey, config);
                 return;
             }
             consecutiveFailures++;
             if (consecutiveFailures >= Math.max(1, config.failureThreshold())) {
-                trip(serverId, config);
+                trip(breakerKey, config);
             }
         }
 
@@ -114,13 +122,13 @@ public class CircuitBreakerRegistry {
             return state;
         }
 
-        private void trip(long serverId, UpstreamSnapshot.CircuitBreaker config) {
+        private void trip(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
             state = State.OPEN;
             openedAtMillis = System.currentTimeMillis();
             consecutiveFailures = 0;
             probes = 0;
-            log.warn("上游熔断打开 serverId={} 保持 {}ms（半开探测 {} 个）",
-                    serverId, config.openMs(), config.halfOpenProbes());
+            log.warn("上游熔断打开 key={} 保持 {}ms（半开探测 {} 个）",
+                    breakerKey, config.openMs(), config.halfOpenProbes());
         }
     }
 }

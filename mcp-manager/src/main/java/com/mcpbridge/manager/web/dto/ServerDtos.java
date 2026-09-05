@@ -6,6 +6,7 @@ import com.mcpbridge.common.snapshot.AuthDSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.snapshot.UpstreamSnapshot;
 import com.mcpbridge.manager.domain.ServerStatus;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
 
@@ -41,11 +42,27 @@ public final class ServerDtos {
             long toolCount,
             long enabledToolCount,
             int listTtlMs,
-            UpstreamSnapshot upstream,
+            List<UpstreamView> upstreams,
             AuthBView authB,
             AuthDView authD,
             List<PublishDtos.BindingView> bindings,
             Instant createdAt,
+            Instant updatedAt,
+            /**
+             * 当前账号是否可在本部门树内<b>管理</b>该 Server。
+             * false 表示跨部门只读授权（ServerAccess APPROVED）或不可访问——
+             * 后端已对该视图做脱敏（authB/authD/bindings/endpointPreview/上游配置为空），前端据此渲染只读态，
+             * 不依赖权限点判断，堵住全局写角色（如 DEPT_DEVELOPER）绕开只读边界。
+             */
+            boolean manageable) {
+    }
+
+    /** 多上游场景下的单个上游视图（serviceId + 配置 + 鉴权掩码）。 */
+    public record UpstreamView(
+            String serviceId,
+            String name,
+            UpstreamSnapshot config,
+            AuthBView authB,
             Instant updatedAt) {
     }
 
@@ -58,8 +75,19 @@ public final class ServerDtos {
             Integer listTtlMs) {
     }
 
-    /** EXE-03/04：上游调用策略。 */
-    public record UpstreamRequest(
+    /** 新建 MCP Server：先建基础信息，再在该 Server 下注册多份 Swagger 文档（多 REST 服务）。 */
+    public record ServerCreateRequest(
+            @NotBlank @Size(max = 128) String name,
+            @Size(max = 128) String title,
+            @Size(max = 2000) String description,
+            @Size(max = 64) String pathSegment,
+            Long deptId) {
+    }
+
+    /** EXE-03/04：单个上游服务的配置（按 serviceId upsert）。 */
+    public record UpstreamEntryRequest(
+            @Size(max = 64) String serviceId,
+            @Size(max = 128) String name,
             @NotEmpty List<String> baseUrls,
             UpstreamSnapshot.LbStrategy lbStrategy,
             Long connectTimeoutMs,

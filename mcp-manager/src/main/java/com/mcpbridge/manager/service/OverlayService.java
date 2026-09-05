@@ -191,6 +191,7 @@ public class OverlayService {
                 streaming,
                 streaming ? streamFormat : null,
                 tool.isIdempotent(),
+                tool.getUpstreamRef(),
                 null);
     }
 

@@ -74,8 +74,10 @@ public class RegistrationController {
                                                      @RequestParam(value = "deptId", required = false) Long deptId,
                                                      @RequestParam(value = "pathSegment", required = false)
                                                      String pathSegment,
+                                                     @RequestParam(value = "targetServerId", required = false)
+                                                     Long targetServerId,
                                                      @AuthenticationPrincipal AuthPrincipal principal) {
-        return ApiResponse.ok(registrationService.createByUpload(name, file, deptId, pathSegment, principal));
+        return ApiResponse.ok(registrationService.createByUpload(name, file, deptId, pathSegment, targetServerId, principal));
     }
 
     /** 直接粘贴 OpenAPI/Swagger 文本注册。Content-Type 用 text/plain，避免与 JSON 请求体混淆。 */
@@ -86,10 +88,12 @@ public class RegistrationController {
                                                            @RequestParam(value = "deptId", required = false) Long deptId,
                                                            @RequestParam(value = "pathSegment", required = false)
                                                            String pathSegment,
+                                                           @RequestParam(value = "targetServerId", required = false)
+                                                           Long targetServerId,
                                                            @RequestBody String rawDoc,
                                                            @AuthenticationPrincipal AuthPrincipal principal) {
         return ApiResponse.ok(registrationService.create(name, rawDoc, DocSource.FILE, "inline",
-                deptId, pathSegment, principal));
+                deptId, pathSegment, targetServerId, principal));
     }
 
     /**

@@ -7,8 +7,8 @@ spring:
     name: mcp-manager
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:mcpbridge}
-    username: ${POSTGRES_USER:mcpbridge}
-    password: ${POSTGRES_PASSWORD:mcpbridge}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:admin}
     hikari:
       maximum-pool-size: 10
       connection-timeout: 5000

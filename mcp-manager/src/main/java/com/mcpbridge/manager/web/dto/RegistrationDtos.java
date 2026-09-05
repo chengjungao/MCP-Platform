@@ -23,7 +23,9 @@ public final class RegistrationDtos {
             /** 为空则归属创建者所在部门。 */
             Long deptId,
             /** 可选：自定义对外 PATH 末段；为空则由服务名推导。 */
-            @Size(max = 64) String pathSegment) {
+            @Size(max = 64) String pathSegment,
+            /** 可选：挂到已有 MCP Server（多服务聚合）；为空则新建 Server。 */
+            Long targetServerId) {
     }
 
     /**

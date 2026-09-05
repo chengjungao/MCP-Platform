@@ -158,3 +158,24 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
 
 /** 审计页的动作用于下拉选项，顺序与上表一致。 */
 export const AUDIT_ACTIONS: string[] = Object.keys(AUDIT_ACTION_LABEL)
+export const ACCESS_STATUS_LABEL: Record<string, string> = {
+  PENDING: '待审批',
+  APPROVED: '已授权',
+  REJECTED: '已驳回',
+  REVOKED: '已回收'
+}
+
+/** 访问申请状态色：绿=已授权，黄=待审批，红=驳回/回收，灰=无。 */
+export function accessStatusTag(value?: string | null): TagType {
+  switch (value) {
+    case 'APPROVED':
+      return 'success'
+    case 'PENDING':
+      return 'warning'
+    case 'REJECTED':
+    case 'REVOKED':
+      return 'danger'
+    default:
+      return 'info'
+  }
+}

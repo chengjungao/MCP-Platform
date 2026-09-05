@@ -79,7 +79,7 @@ public class UpstreamInvoker {
     private final ConcurrentHashMap<String, WebClient> clients = new ConcurrentHashMap<>();
 
     /** 轮询计数器按 Server 隔离，避免高频 Server 打乱低频 Server 的分发节奏。 */
-    private final ConcurrentHashMap<Long, AtomicLong> counters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> counters = new ConcurrentHashMap<>();
 
     public UpstreamInvoker(ExecutorProperties properties, CircuitBreakerRegistry breakers) {
         this.properties = properties;
@@ -90,24 +90,29 @@ public class UpstreamInvoker {
                                          ToolSnapshot tool,
                                          RestRequest request,
                                          UpstreamCredentials credentials) {
-        UpstreamSnapshot upstream = server.upstream() != null
-                ? server.upstream()
+        com.mcpbridge.common.snapshot.UpstreamEntry entry = server.effectiveUpstream(tool);
+        UpstreamSnapshot upstream = entry.config() != null
+                ? entry.config()
                 : UpstreamSnapshot.defaults(List.of());
+        String breakerKey = CircuitBreakerRegistry.key(server.serverId(), entry.serviceId());
         List<String> baseUrls = upstream.baseUrls() == null
                 ? List.of()
                 : upstream.baseUrls().stream().filter(url -> url != null && !url.isBlank()).toList();
         if (baseUrls.isEmpty()) {
             return Mono.error(upstreamError(server, "Server 未配置可用的上游地址",
-                    Map.of("serverId", server.serverId(), "pathSegment", nullSafe(server.pathSegment()))));
+                    Map.of("serverId", server.serverId(),
+                            "pathSegment", nullSafe(server.pathSegment()),
+                            "serviceId", nullSafe(entry.serviceId()))));
         }
 
         UpstreamSnapshot.CircuitBreaker breakerConfig = upstream.circuitBreaker() != null
                 ? upstream.circuitBreaker()
                 : UpstreamSnapshot.CircuitBreaker.defaults();
-        if (!breakers.allow(server.serverId(), breakerConfig)) {
+        if (!breakers.allow(breakerKey, breakerConfig)) {
             return Mono.error(upstreamError(server, "上游熔断已打开，暂时拒绝调用",
                     Map.of("serverId", server.serverId(),
                             "pathSegment", nullSafe(server.pathSegment()),
+                            "serviceId", nullSafe(entry.serviceId()),
                             "circuitBreaker", "OPEN",
                             "openMs", breakerConfig.openMs())));
         }
@@ -119,7 +124,7 @@ public class UpstreamInvoker {
         int retries = idempotent ? Math.max(0, upstream.retries()) : 0;
         boolean canRetry = retries > 0;
 
-        String baseUrl = pickBaseUrl(server, upstream, baseUrls);
+        String baseUrl = pickBaseUrl(server, breakerKey, upstream, baseUrls);
         URI uri = URI.create(buildUri(baseUrl, request, credentials.query()));
         WebClient client = clientFor(upstream.connectTimeoutMs(), upstream.readTimeoutMs());
         int budget = properties.upstream().maxResponseBytes();
@@ -145,22 +150,22 @@ public class UpstreamInvoker {
         return call
                 .doOnNext(response -> {
                     if (response.isServerError()) {
-                        breakers.onFailure(server.serverId(), breakerConfig);
+                        breakers.onFailure(breakerKey, breakerConfig);
                     } else {
-                        breakers.onSuccess(server.serverId());
+                        breakers.onSuccess(breakerKey);
                     }
                 })
-                .onErrorResume(t -> recover(server, tool, uri, breakerConfig, t));
+                .onErrorResume(t -> recover(server, tool, uri, breakerKey, breakerConfig, t));
     }
 
     // ------------------------------------------------------------------ 负载均衡
 
-    String pickBaseUrl(ServerSnapshot server, UpstreamSnapshot upstream, List<String> baseUrls) {
+    String pickBaseUrl(ServerSnapshot server, String breakerKey, UpstreamSnapshot upstream, List<String> baseUrls) {
         int size = baseUrls.size();
         if (size == 1) {
             return baseUrls.get(0);
         }
-        AtomicLong counter = counters.computeIfAbsent(server.serverId(), id -> new AtomicLong());
+        AtomicLong counter = counters.computeIfAbsent(breakerKey, id -> new AtomicLong());
         if (upstream.lbStrategy() == UpstreamSnapshot.LbStrategy.WEIGHTED) {
             List<Integer> weights = upstream.weights();
             if (weights != null && weights.size() == size) {
@@ -344,12 +349,13 @@ public class UpstreamInvoker {
     private Mono<UpstreamResponse> recover(ServerSnapshot server,
                                            ToolSnapshot tool,
                                            URI uri,
+                                           String breakerKey,
                                            UpstreamSnapshot.CircuitBreaker breakerConfig,
                                            Throwable throwable) {
         Throwable cause = unwrap(throwable);
         if (cause instanceof RetryableUpstream retryable) {
             UpstreamResponse response = retryable.response();
-            breakers.onFailure(server.serverId(), breakerConfig);
+            breakers.onFailure(breakerKey, breakerConfig);
             log.warn("上游重试后仍失败 server={} tool={} status={}",
                     server.pathSegment(), tool.name(), response.status());
             return Mono.just(response);
@@ -357,7 +363,7 @@ public class UpstreamInvoker {
         if (cause instanceof McpErrorException error) {
             return Mono.error(error);
         }
-        breakers.onFailure(server.serverId(), breakerConfig);
+        breakers.onFailure(breakerKey, breakerConfig);
         String reason = LogSanitizer.sanitizeAndTruncate(String.valueOf(cause.getMessage()), 256);
         log.warn("上游调用失败 server={} tool={} host={} 原因={}",
                 server.pathSegment(), tool.name(), uri.getHost(), reason);

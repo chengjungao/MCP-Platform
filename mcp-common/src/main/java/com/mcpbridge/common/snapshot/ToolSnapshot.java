@@ -10,7 +10,7 @@ import java.util.Set;
 /**
  * 生效模型中的单个 Tool（base ⊕ overlay 合并后的结果，Executor 直接加载）。
  *
- * @param name         tool 名（BR-1 命名规则的产物，或 overlay 覆盖后的名字）
+ * @param name         tool 名（BR-1 命名规则的产物，或 overlay 覆盖后的名字；多服务接入时带服务前缀）
  * @param title        可选展示名
  * @param description  tool 描述（overlay 可覆盖）
  * @param method       上游 HTTP 方法
@@ -22,7 +22,8 @@ import java.util.Set;
  * @param streaming    是否流式端点（BR-5）
  * @param streamFormat 流格式：SSE / NDJSON / CHUNKED
  * @param idempotent   是否幂等（决定 EXE-03 的重试策略）
- * @param authBOverride tool 级上行授权覆盖（BR-4，P1；为 null 时用 Server 级配置）
+ * @param upstreamRef  指向 {@link UpstreamEntry#serviceId()}（注册时自动绑定，tool 按此选所属上游）
+ * @param authBOverride tool 级上行授权覆盖（BR-4，P1；为 null 时用 UpstreamEntry.authB，再回落 Server.authB）
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ToolSnapshot(
@@ -38,6 +39,7 @@ public record ToolSnapshot(
         boolean streaming,
         String streamFormat,
         boolean idempotent,
+        String upstreamRef,
         AuthBSnapshot authBOverride) {
 
     /** 幂等方法集合（EXE-03：仅幂等方法允许自动重试）。 */

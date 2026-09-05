@@ -173,6 +173,8 @@ export interface CreateByUrlRequest {
   url: string
   deptId?: number
   pathSegment?: string
+  /** 挂到已有 MCP Server（多服务聚合）；不传则新建 Server。 */
+  targetServerId?: number
 }
 
 /** 重新解析后的差异报告（REG-03 / US-12）。 */
@@ -203,7 +205,19 @@ export interface UpstreamSnapshot {
   }
 }
 
-export interface UpstreamRequest {
+/** 多上游场景下单个上游服务视图（后端 ServerDtos.UpstreamView）。 */
+export interface UpstreamView {
+  serviceId: string
+  name: string
+  config: UpstreamSnapshot
+  authB?: AuthBView | null
+  updatedAt?: string
+}
+
+/** 按 serviceId upsert 单个上游服务的请求（后端 ServerDtos.UpstreamEntryRequest）。 */
+export interface UpstreamEntryRequest {
+  serviceId?: string
+  name?: string
   baseUrls: string[]
   lbStrategy?: LbStrategy
   connectTimeoutMs?: number
@@ -294,12 +308,19 @@ export interface ServerView {
   toolCount: number
   enabledToolCount: number
   listTtlMs: number
-  upstream?: UpstreamSnapshot
+  /** 多上游服务列表（一个 Server 挂多个 REST 服务）。 */
+  upstreams?: UpstreamView[]
   authB?: AuthBView
   authD?: AuthDView
   bindings?: BindingView[]
   createdAt?: string
   updatedAt?: string
+  /**
+   * 当前账号是否可在本部门树内管理该 Server。
+   * false = 跨部门只读授权（后端已脱敏：endpoint/authB/authD/bindings/上游配置均为空），
+   * 前端据此渲染只读态，不依赖权限点判断。
+   */
+  manageable: boolean
 }
 
 export interface ServerUpdateRequest {
@@ -308,6 +329,15 @@ export interface ServerUpdateRequest {
   description?: string
   pathSegment?: string
   listTtlMs?: number
+}
+
+/** 新建 MCP Server（先建基础信息，再在该 Server 下注册多份 Swagger 文档）。 */
+export interface ServerCreateRequest {
+  name: string
+  title?: string
+  description?: string
+  pathSegment?: string
+  deptId?: number
 }
 
 export interface ToolView {
@@ -386,6 +416,8 @@ export interface ToolSnapshot {
   streaming: boolean
   streamFormat?: string
   idempotent: boolean
+  /** 指向 UpstreamView.serviceId，注册时自动绑定。 */
+  upstreamRef?: string
 }
 
 export interface EffectiveModelView {
@@ -511,4 +543,43 @@ export interface PlatformMeta {
   pathSegmentPattern: string
   toolNamePattern: string
   builtinRoles: string[]
+}
+// ---------------------------------------------------------------- 跨部门访问申请
+
+export type AccessStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'REVOKED'
+
+/** 可申请目录行（我不可直接访问的 Server 最小信息）。 */
+export interface AccessCatalogRow {
+  id: number
+  name: string
+  title?: string
+  pathSegment: string
+  status: ServerStatus
+  deptId: number
+  deptName?: string
+  /** 我的部门对该 Server 的申请状态；null = 从未申请。 */
+  myStatus?: AccessStatus | null
+  accessId?: number | null
+  createdAt?: string
+}
+
+/** 申请/授权记录视图（我发起的 / 待审批 / 已授权共用）。 */
+export interface AccessView {
+  id: number
+  serverId: number
+  serverName: string
+  serverPathSegment: string
+  deptId: number
+  deptName?: string
+  reason?: string
+  status: AccessStatus
+  requestedBy: number
+  requesterName?: string
+  requestedAt?: string
+  reviewedBy?: number
+  reviewerName?: string
+  reviewedAt?: string
+  reviewNote?: string
+  /** 当前账号是否可管理该 Server（资源方视角）。 */
+  manageable: boolean
 }

@@ -13,8 +13,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -58,6 +60,15 @@ public class ServerController {
         return ApiResponse.ok(serverService.view(id, principal));
     }
 
+    /** 新建 MCP Server（先建基础信息，再在该 Server 下注册多份 Swagger 文档）。 */
+    @PostMapping
+    @PreAuthorize("hasAuthority('server:write')")
+    public ApiResponse<ServerDtos.ServerView> create(@Valid @RequestBody ServerDtos.ServerCreateRequest request,
+                                                     @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(serverService.create(request, principal),
+                "已创建空 Server，接下来在「上游服务」里注册 Swagger 文档");
+    }
+
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('server:write')")
     public ApiResponse<ServerDtos.ServerView> update(@PathVariable Long id,
@@ -67,14 +78,38 @@ public class ServerController {
                 "已保存，需重新发布后对 MCP Client 生效");
     }
 
-    /** 上游地址、负载均衡、超时、重试与熔断（EXE-03 / EXE-04）。 */
-    @PutMapping("/{id}/upstream")
+    /** 按 serviceId upsert 单个上游服务配置（EXE-03 / EXE-04，多服务支持）。 */
+    @PutMapping("/{id}/upstreams/{serviceId}")
     @PreAuthorize("hasAuthority('server:write')")
-    public ApiResponse<ServerDtos.ServerView> updateUpstream(@PathVariable Long id,
-                                                             @Valid @RequestBody ServerDtos.UpstreamRequest request,
-                                                             @AuthenticationPrincipal AuthPrincipal principal) {
-        return ApiResponse.ok(serverService.updateUpstream(id, request, principal),
+    public ApiResponse<ServerDtos.ServerView> upsertUpstream(@PathVariable Long id,
+                                                              @PathVariable String serviceId,
+                                                              @Valid @RequestBody ServerDtos.UpstreamEntryRequest request,
+                                                              @AuthenticationPrincipal AuthPrincipal principal) {
+        // 路径里的 serviceId 优先；请求体里的 serviceId 若存在须一致，否则以路径为准
+        ServerDtos.UpstreamEntryRequest merged = new ServerDtos.UpstreamEntryRequest(
+                serviceId,
+                request.name(),
+                request.baseUrls(),
+                request.lbStrategy(),
+                request.connectTimeoutMs(),
+                request.readTimeoutMs(),
+                request.retries(),
+                request.retryOnStatus(),
+                request.cbFailureThreshold(),
+                request.cbOpenMs(),
+                request.cbHalfOpenProbes());
+        return ApiResponse.ok(serverService.upsertUpstream(id, merged, principal),
                 "已保存，需重新发布后对 MCP Client 生效");
+    }
+
+    /** 删除某个上游服务（多服务场景下移除一份 Swagger 的上游配置）。 */
+    @DeleteMapping("/{id}/upstreams/{serviceId}")
+    @PreAuthorize("hasAuthority('server:write')")
+    public ApiResponse<ServerDtos.ServerView> deleteUpstream(@PathVariable Long id,
+                                                              @PathVariable String serviceId,
+                                                              @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(serverService.deleteUpstream(id, serviceId, principal),
+                "已删除，需重新发布后对 MCP Client 生效");
     }
 
     /** 上行鉴权（Auth-B）视图：只回掩码，绝不回明文。 */
@@ -82,7 +117,7 @@ public class ServerController {
     @PreAuthorize("hasAuthority('server:read')")
     public ApiResponse<ServerDtos.AuthBView> authB(@PathVariable Long id,
                                                    @AuthenticationPrincipal AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(id, principal);
+        McpServer server = serverService.requireManage(id, principal);
         return ApiResponse.ok(authConfigService.authBView(server));
     }
 
@@ -92,7 +127,7 @@ public class ServerController {
     public ApiResponse<ServerDtos.AuthBView> saveAuthB(@PathVariable Long id,
                                                        @Valid @RequestBody ServerDtos.AuthBRequest request,
                                                        @AuthenticationPrincipal AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(id, principal);
+        McpServer server = serverService.requireManage(id, principal);
         return ApiResponse.ok(authConfigService.saveAuthB(server, request),
                 "凭据已加密保存，需重新发布后生效");
     }
@@ -102,7 +137,7 @@ public class ServerController {
     @PreAuthorize("hasAuthority('server:read')")
     public ApiResponse<ServerDtos.AuthDView> authD(@PathVariable Long id,
                                                    @AuthenticationPrincipal AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(id, principal);
+        McpServer server = serverService.requireManage(id, principal);
         return ApiResponse.ok(authConfigService.authDView(server));
     }
 
@@ -111,7 +146,7 @@ public class ServerController {
     public ApiResponse<ServerDtos.AuthDView> saveAuthD(@PathVariable Long id,
                                                        @Valid @RequestBody ServerDtos.AuthDRequest request,
                                                        @AuthenticationPrincipal AuthPrincipal principal) {
-        McpServer server = serverService.requireServer(id, principal);
+        McpServer server = serverService.requireManage(id, principal);
         return ApiResponse.ok(authConfigService.saveAuthD(server, request),
                 "已保存，需重新发布后生效");
     }

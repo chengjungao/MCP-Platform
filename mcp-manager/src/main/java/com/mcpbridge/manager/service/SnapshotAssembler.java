@@ -68,7 +68,7 @@ public class SnapshotAssembler {
                 server.getPathSegment());
         AuthBSnapshot authB = authConfigService.resolveAuthB(server);
         AuthDSnapshot authD = authConfigService.resolveAuthD(server, endpoint);
-        UpstreamSnapshot upstream = serverService.upstreamOf(server);
+        List<com.mcpbridge.common.snapshot.UpstreamEntry> upstreams = serverService.upstreamEntriesOf(server);
         List<ToolSnapshot> tools = enabledTools.stream().map(overlayService::toSnapshot).toList();
         return new ServerSnapshot(
                 server.getId(),
@@ -83,7 +83,7 @@ public class SnapshotAssembler {
                 endpoint,
                 authD,
                 authB,
-                upstream,
+                upstreams,
                 tools,
                 List.of(),
                 List.of(),
