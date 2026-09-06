@@ -27,6 +27,7 @@ public final class AuditAction {
 
     public static final String SERVER_UPDATE = "server.update";
     public static final String SERVER_PATH_CHANGE = "server.path_change";
+    public static final String SERVER_DELETE = "server.delete";
     public static final String TOOL_OVERLAY_UPDATE = "tool.overlay_update";
     public static final String TOOL_OVERLAY_RESET = "tool.overlay_reset";
     public static final String TOOL_TOGGLE = "tool.toggle";

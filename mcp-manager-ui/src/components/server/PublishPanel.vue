@@ -37,6 +37,83 @@ const rollbackDialog = reactive({
   version: undefined as number | undefined
 })
 
+// ---- MCP 客户端配置（发布详情给出完整可复制的 mcpServers JSON）----
+const rememberedToken = ref('') // 会话内记住操作方粘贴的 Auth-D 静态令牌（仅内存，不落库）
+const mcpDialog = reactive({
+  visible: false,
+  binding: null as BindingView | null,
+  token: '',
+  activeTab: 'json'
+})
+
+const authDMode = computed(() => props.server.authD?.mode ?? 'NONE')
+const tokenRequired = computed(
+  () => authDMode.value === 'STATIC_BEARER' && mcpDialog.binding != null
+)
+
+/** STATIC_BEARER 需要真实令牌才允许复制；NONE/OAUTH2 不受限。 */
+function copyable(): boolean {
+  return !tokenRequired.value || mcpDialog.token.trim().length > 0
+}
+
+function openMcpConfig(binding: BindingView): void {
+  if (!binding.endpoint) return
+  mcpDialog.binding = binding
+  mcpDialog.token = rememberedToken.value
+  mcpDialog.activeTab = 'json'
+  mcpDialog.visible = true
+}
+
+/** Authorization 头：NONE 无；STATIC_BEARER 用输入令牌（未输入给占位）；OAUTH2 占位（P1 未实现）。 */
+function authHeader(): string | null {
+  if (authDMode.value === 'NONE') return null
+  if (authDMode.value === 'OAUTH2') return 'Bearer <OAuth2 令牌>'
+  const token = mcpDialog.token.trim()
+  return token ? `Bearer ${token}` : 'Bearer <静态令牌>'
+}
+
+function mcpConfigJson(): string {
+  const binding = mcpDialog.binding
+  if (!binding) return ''
+  const entry: Record<string, unknown> = { type: 'http', url: binding.endpoint }
+  const header = authHeader()
+  if (header) entry.headers = { Authorization: header }
+  // key 用 PATH 末段（全局唯一），便于多个 Server 的配置合并进同一份 mcpServers
+  return JSON.stringify({ mcpServers: { [props.server.pathSegment]: entry } }, null, 2)
+}
+
+function mcpCurl(): string {
+  const binding = mcpDialog.binding
+  if (!binding) return ''
+  const lines = [
+    `curl -sS -X POST '${binding.endpoint}' \\`,
+    "  -H 'Content-Type: application/json' \\",
+    "  -H 'Mcp-Protocol-Version: 2026-07-28' \\"
+  ]
+  const header = authHeader()
+  if (header) lines.push(`  -H 'Authorization: ${header}' \\`)
+  lines.push("  -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}'")
+  return lines.join('\n')
+}
+
+async function copyMcpJson(): Promise<void> {
+  if (!copyable()) {
+    ElMessage.warning('STATIC_BEARER 下行鉴权需要令牌：请先粘贴 Auth-D 静态令牌')
+    return
+  }
+  rememberedToken.value = mcpDialog.token.trim()
+  await copy(mcpConfigJson())
+}
+
+async function copyMcpCurl(): Promise<void> {
+  if (!copyable()) {
+    ElMessage.warning('STATIC_BEARER 下行鉴权需要令牌：请先粘贴 Auth-D 静态令牌')
+    return
+  }
+  rememberedToken.value = mcpDialog.token.trim()
+  await copy(mcpCurl())
+}
+
 const canPublish = computed(() => auth.can('publish:execute'))
 const canRollback = computed(() => auth.can('publish:rollback'))
 const currentBindings = computed(() => bindings.value.filter((binding) => binding.current))
@@ -350,8 +427,17 @@ onMounted(() => {
         <el-table-column label="发布时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.publishedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.state === 'PUBLISHED' && row.current && row.endpoint"
+              link
+              type="success"
+              size="small"
+              @click="openMcpConfig(row)"
+            >
+              MCP 配置
+            </el-button>
             <el-button link type="primary" size="small" :disabled="!canPublish" @click="openPublish(row)">
               重新发布
             </el-button>
@@ -437,6 +523,62 @@ onMounted(() => {
         <el-button type="danger" :loading="rollbackDialog.saving" @click="submitRollback">确认回滚</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="mcpDialog.visible" title="MCP 客户端配置" width="680px" top="6vh">
+      <template v-if="mcpDialog.binding">
+        <el-alert type="info" :closable="false" show-icon class="tip">
+          <template #title>
+            {{ mcpDialog.binding.clusterName }} · v{{ mcpDialog.binding.version }}：{{ mcpDialog.binding.endpoint }}
+          </template>
+          <template #default>
+            平台端点仅支持 Streamable HTTP 传输（POST、无会话，协议规范 2026-07-28），不支持 SSE / stdio。
+            把 JSON 粘进支持远程 MCP 的客户端（Claude Desktop / Cursor 等）的 mcpServers 配置即可；
+            配置 key 取 PATH 末段「{{ props.server.pathSegment }}」（全局唯一），多个 Server 可直接合并。
+          </template>
+        </el-alert>
+
+        <el-alert v-if="authDMode === 'OAUTH2'" type="warning" :closable="false" show-icon class="tip">
+          <template #title>该 Server 配置了 OAuth 2.1 下行鉴权，属 P1 能力，Executor 当前会返回 501</template>
+          <template #default>请先在「下行授权 Auth-D」改为 STATIC_BEARER 或 NONE，否则下方配置无法连通。</template>
+        </el-alert>
+
+        <el-form v-if="tokenRequired" label-width="96px" class="token-form">
+          <el-form-item label="Auth-D 令牌">
+            <el-input
+              v-model="mcpDialog.token"
+              type="password"
+              show-password
+              placeholder="粘贴配置 Auth-D 时设置的静态令牌"
+              @keyup.enter="copyMcpJson"
+            />
+          </el-form-item>
+          <p class="muted hint">
+            静态令牌只以 sha256 存库、平台无法回显。在此粘贴仅用于当场拼装配置并复制到剪贴板，不保存、不上传。
+          </p>
+        </el-form>
+
+        <el-tabs v-model="mcpDialog.activeTab">
+          <el-tab-pane label="mcpServers JSON" name="json">
+            <div class="code-head">
+              <span class="muted">替换目标客户端配置中的 mcpServers 对象即可</span>
+              <el-button link type="primary" size="small" @click="copyMcpJson">复制 JSON</el-button>
+            </div>
+            <pre class="code">{{ mcpConfigJson() }}</pre>
+          </el-tab-pane>
+          <el-tab-pane label="curl 冒烟" name="curl">
+            <div class="code-head">
+              <span class="muted">粘贴到终端验证连通，应返回 server/discover 能力清单</span>
+              <el-button link type="primary" size="small" @click="copyMcpCurl">复制 curl</el-button>
+            </div>
+            <pre class="code">{{ mcpCurl() }}</pre>
+          </el-tab-pane>
+        </el-tabs>
+      </template>
+      <template #footer>
+        <el-button @click="mcpDialog.visible = false">关闭</el-button>
+        <el-button type="primary" :disabled="!copyable()" @click="copyMcpJson">复制 JSON</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -491,6 +633,36 @@ onMounted(() => {
 
 .path {
   margin-left: 6px;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.code {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 300px;
+  overflow: auto;
+  font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--el-text-color-primary);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+}
+
+.token-form {
+  margin-top: 12px;
+}
+
+.token-form .hint {
+  margin: -6px 0 0;
 }
 
 .failure {

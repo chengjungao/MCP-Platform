@@ -20,6 +20,7 @@ import com.mcpbridge.manager.repository.ExecutorClusterRepository;
 import com.mcpbridge.manager.repository.McpServerRepository;
 import com.mcpbridge.manager.repository.McpToolRepository;
 import com.mcpbridge.manager.repository.PublishBindingRepository;
+import com.mcpbridge.manager.repository.ApiRegistrationRepository;
 import com.mcpbridge.manager.security.AuthPrincipal;
 import com.mcpbridge.manager.web.dto.PageView;
 import com.mcpbridge.manager.web.dto.PublishDtos;
@@ -66,6 +67,7 @@ public class ServerService {
     private final DepartmentScope departmentScope;
     private final DepartmentService departmentService;
     private final AuditService auditService;
+    private final ApiRegistrationRepository registrationRepository;
 
     public ServerService(McpServerRepository serverRepository,
                          McpToolRepository toolRepository,
@@ -78,7 +80,8 @@ public class ServerService {
                          PathSegmentGuard pathSegmentGuard,
                          DepartmentScope departmentScope,
                          DepartmentService departmentService,
-                         AuditService auditService) {
+                         AuditService auditService,
+                         ApiRegistrationRepository registrationRepository) {
         this.serverRepository = serverRepository;
         this.toolRepository = toolRepository;
         this.bindingRepository = bindingRepository;
@@ -91,6 +94,7 @@ public class ServerService {
         this.departmentScope = departmentScope;
         this.departmentService = departmentService;
         this.auditService = auditService;
+        this.registrationRepository = registrationRepository;
     }
 
     // ------------------------------------------------------------------ 查询
@@ -257,6 +261,91 @@ public class ServerService {
             auditService.record(action, "server", saved.getId(), changes);
         }
         return toViews(List.of(saved), principal).get(saved.getId());
+    }
+
+    /**
+     * 删除 MCP Server（SVR-06）。
+     *
+     * <p>语义（与用户确认）：
+     * <ul>
+     *   <li>已发布（存在 current + PUBLISHED 的 binding）返回 409，必须先下线再删；
+     *       草稿等未上线状态可直接删；</li>
+     *   <li>关联数据由 DB 级联清理：mcp_tool、auth_config（Auth-B）、server_upstream、
+     *       publish_binding（发布历史）、server_access（跨部门授权）；</li>
+     *   <li>「与该 Server 相关」的接口文档记录（api_registration）连坐删除：
+     *       主 registration + 聚合注册进本 Server 的 registration（server_upstream.service_id
+     *       命中数字 registrationId 的记录）。若某条记录仍被其他 Server 引用则跳过（防御，正常不可达）。</li>
+     * </ul>
+     */
+    @Transactional
+    public void delete(Long id, AuthPrincipal principal) {
+        McpServer server = requireManage(id, principal);
+
+        List<PublishBinding> live = bindingRepository.findByServerIdOrderByIdDesc(id).stream()
+                .filter(b -> b.isCurrent() && b.getState() == BindingState.PUBLISHED)
+                .toList();
+        if (!live.isEmpty()) {
+            List<String> clusters = live.stream()
+                    .map(b -> clusterRepository.findById(b.getClusterId())
+                            .map(ExecutorCluster::getName)
+                            .orElse("cluster#" + b.getClusterId()))
+                    .toList();
+            throw PlatformException.conflict("该 Server 已发布到集群，请先下线后再删除",
+                    Map.of("serverId", id, "pathSegment", nullSafe(server.getPathSegment()), "clusters", clusters));
+        }
+
+        // 收集连坐删除的文档注册记录
+        List<Long> regIds = linkedRegistrationIds(server);
+
+        // 解除 server → registration 的外键（registration_id 允许 NULL），
+        // 避免同一事务里先删 server 再删 registration 时受 flush 顺序影响
+        if (server.getRegistrationId() != null) {
+            server.setRegistrationId(null);
+            serverRepository.save(server);
+        }
+        // 删除 Server：mcp_tool / auth_config / server_upstream / publish_binding / server_access 由 DB 级联清理
+        serverRepository.delete(server);
+
+        List<Long> deletedRegs = new ArrayList<>();
+        for (Long regId : regIds) {
+            if (serverRepository.findByRegistrationId(regId).isEmpty()) {
+                registrationRepository.deleteById(regId);
+                deletedRegs.add(regId);
+            }
+        }
+
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("action", "delete");
+        detail.put("name", nullSafe(server.getName()));
+        detail.put("pathSegment", nullSafe(server.getPathSegment()));
+        detail.put("deptId", server.getDeptId());
+        if (!deletedRegs.isEmpty()) {
+            detail.put("deletedRegistrations", deletedRegs);
+        }
+        auditService.record(AuditAction.SERVER_DELETE, "server", id, detail);
+    }
+
+    /** 本 Server 直接相关的文档记录：主 registration + 聚合注册（serviceId 为数字且存在对应记录）的 registration。 */
+    private List<Long> linkedRegistrationIds(McpServer server) {
+        Set<Long> ids = new LinkedHashSet<>();
+        if (server.getRegistrationId() != null) {
+            ids.add(server.getRegistrationId());
+        }
+        for (com.mcpbridge.manager.domain.ServerUpstream upstream
+                : upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId())) {
+            String serviceId = upstream.getServiceId();
+            if (serviceId != null && serviceId.matches("\\d+")) {
+                long candidate = Long.parseLong(serviceId);
+                if (registrationRepository.existsById(candidate)) {
+                    ids.add(candidate);
+                }
+            }
+        }
+        return List.copyOf(ids);
+    }
+
+    private static String nullSafe(String value) {
+        return value == null ? "" : value;
     }
 
     /** EXE-03 / EXE-04：按 serviceId upsert 单个上游服务的配置。 */

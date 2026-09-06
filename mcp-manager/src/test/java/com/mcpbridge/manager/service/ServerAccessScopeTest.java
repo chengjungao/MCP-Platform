@@ -10,6 +10,7 @@ import com.mcpbridge.manager.repository.McpToolRepository;
 import com.mcpbridge.manager.repository.PublishBindingRepository;
 import com.mcpbridge.manager.repository.ServerAccessRepository;
 import com.mcpbridge.manager.repository.ServerUpstreamRepository;
+import com.mcpbridge.manager.repository.ApiRegistrationRepository;
 import com.mcpbridge.manager.security.AuthPrincipal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,7 +66,8 @@ class ServerAccessScopeTest {
                 mock(PathSegmentGuard.class),
                 departmentScope,
                 mock(DepartmentService.class),
-                mock(AuditService.class));
+                mock(AuditService.class),
+                mock(ApiRegistrationRepository.class));
         when(serverRepository.findById(1L)).thenReturn(Optional.of(server(1L, 99L)));
     }
 

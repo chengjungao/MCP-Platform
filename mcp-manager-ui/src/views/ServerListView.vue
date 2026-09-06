@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { notifyError } from '@/api/http'
 import * as orgApi from '@/api/org'
@@ -61,6 +61,30 @@ async function copy(endpoint?: string): Promise<void> {
     ElMessage.success('端点已复制')
   } else {
     ElMessage.error('复制失败，请手动选择文本')
+  }
+}
+
+async function removeServer(row: ServerView): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `删除后不可恢复，将一并移除：\n` +
+        `· ${row.toolCount} 个 Tool 及覆盖/启用配置\n` +
+        `· 上游服务配置、Auth-B / Auth-D 授权\n` +
+        `· 发布记录与跨部门访问授权\n` +
+        `· 生成本 Server 的接口文档存档（注册记录）\n\n` +
+        `若该 Server 仍发布在集群上，后端会拒绝删除，请先下线。`,
+      `删除 Server「${row.name}」？`,
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await serverApi.remove(row.id)
+    ElMessage.success('Server 已删除')
+    await load()
+  } catch (error) {
+    notifyError(error)
   }
 }
 
@@ -180,9 +204,18 @@ onMounted(async () => {
       <el-table-column label="更新时间" width="170">
         <template #default="{ row }">{{ formatDateTime(row.updatedAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
+      <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="open(row)">详情</el-button>
+          <el-button
+            v-if="auth.can('server:write') && row.manageable"
+            link
+            type="danger"
+            size="small"
+            @click="removeServer(row)"
+          >
+            删除
+          </el-button>
         </template>
       </el-table-column>
       <template #empty>

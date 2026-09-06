@@ -69,6 +69,14 @@ public class ServerController {
                 "已创建空 Server，接下来在「上游服务」里注册 Swagger 文档");
     }
 
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('server:write')")
+    public ApiResponse<Void> delete(@PathVariable Long id,
+                                    @AuthenticationPrincipal AuthPrincipal principal) {
+        serverService.delete(id, principal);
+        return ApiResponse.ok(null, "Server 已删除");
+    }
+
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('server:write')")
     public ApiResponse<ServerDtos.ServerView> update(@PathVariable Long id,

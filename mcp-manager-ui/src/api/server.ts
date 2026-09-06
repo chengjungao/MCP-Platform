@@ -124,3 +124,8 @@ export function rollback(
 export function publishHistory(serverId: number, clusterId: number): Promise<BindingView[]> {
   return get<BindingView[]>(`/servers/${serverId}/publish-history`, { clusterId })
 }
+
+/** 删除 MCP Server（已发布到集群的会被后端 409 拦截，须先下线）。 */
+export function remove(serverId: number): Promise<void> {
+  return del<void>(`/servers/${serverId}`)
+}
