@@ -127,6 +127,7 @@ HTTP 镜像被 Maven 3.9 的 `maven-default-http-blocker` 拦截。
 | [docs/spike/RT-1-streaming-bridge.md](docs/spike/RT-1-streaming-bridge.md) | RT-1 Spike 报告：流式桥接协议层落地形态调研 |
 | [docs/spike/Multi-Upstream-Server-Design.md](docs/spike/Multi-Upstream-Server-Design.md) | 单 MCP Server 支持多 REST 服务数据模型变更设计 |
 | [docs/PRD/](docs/PRD/) | 产品规格文档 v0.2（需求来源） |
+| [docs/使用手册-REST发布与Codex接入.md](docs/使用手册-REST发布与Codex接入.md) | 使用手册：REST API 发布 MCP Server + Codex 集成（配操作截图） |
 | [deploy/README.md](deploy/README.md) | 编排拓扑、自检脚本、生产前必改项 |
 | [mcp-manager-ui/README.md](mcp-manager-ui/README.md) | 控制台工程说明 |
 
@@ -145,16 +146,59 @@ Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离
 **明确未实现**（都在 [架构说明 §10](docs/ARCHITECTURE.md#10-已知取舍与缺口) 里写明现状与影响，
 不做委婉表述）：
 
-- **流式 tool（BR-5）**：Spike（RT-1）已完成，决策见 [ADR-0003](docs/adr/ADR-0003-streaming-bridge.md)——
-  采用 Streamable HTTP SSE + 缓冲兜底。当前仍维持 P0 行为（从 `tools/list` 剔除、调用返回 501），
-  P1 实现进行中。
+- **流式 tool（EXE-06 / BR-5）**：Spike（RT-1）已完成，方案见 [ADR-0003](docs/adr/ADR-0003-streaming-bridge.md)
+  （Streamable HTTP SSE + 缓冲兜底），状态 **Proposed、待评审落地**（2026-09-05 起挂起）。
+  当前仍维持 P0 行为（从 `tools/list` 剔除、调用返回 501）。
 - **Auth-D OAuth 2.1（EXE-07）**：元数据会存、`resourceMetadataUrl` 会派生，但授权码 + PKCE + DCR
   未实现。配置成 OAUTH2 的 Server 端点**显式拒绝**（501 + `-32004`）——半实现的鉴权比没有
   鉴权更危险，因为它会让运维误以为端点已受保护。
-- **WEIGHTED 负载均衡**：权重不落库，Executor 在权重数量与地址数量不匹配时退回轮询。
-  UI 如实告警，不提供假的权重编辑器。
-- **resources / prompts（BR-7）**：返回空目录 + `ttlMs`（P1，Swagger 推导不出这两类对象）。
-- **tool 级 Auth-B 覆盖**、**PATH 变更 301 迁移提示**：P1 / P2。
+- **resources / prompts 管理（SVR-05/06）**：executor 运行时已就绪（list/read/get + discover 门控 +
+  快照），manager 缺管理模型 / UI / 组装 → 对外恒返回空目录 + `ttlMs`（P1，Swagger 推导不出这两类对象）。
+- **PATH 变更 301 迁移提示（P2）**：路径末段变更后旧地址的迁移提示未实现。
+- **WEIGHTED 权重编辑器（P2）**：权重已可落库（`server_upstream.weights` JSONB）且 Executor 按权分发，
+  权重与地址数量不匹配时退回轮询并告警（EXE-04 主体已提前完成）；剩余缺口是控制台权重编辑器。
+
+---
+
+## 待办事项（Backlog）
+
+> 盘点日期：2026-09-07；基准：[PRD v0.2 §5.5](docs/PRD/MCP平台_产品规格文档_v0.2.md) 需求功能清单。
+> 结论：**P0 / MVP 已全部落地**；下表均为 P1 / P2 后续项。编号即 PRD 功能编号。
+
+### 已就绪待评审（唯一有完整方案）
+
+| 编号 | 待办 | 状态与下一步 |
+| --- | --- | --- |
+| EXE-06 | 流式 tool 桥接（BR-5） | [ADR-0003](docs/adr/ADR-0003-streaming-bridge.md) 已 Proposed（2026-09-05 挂起）：Streamable HTTP SSE + 缓冲兜底；评审通过后落地 executor 流式分支 |
+
+### P1 未开始（GA 必达候选）
+
+| 编号 | 待办 | 现状 / 缺口 |
+| --- | --- | --- |
+| EXE-07 | Auth-D OAuth 2.1 | 元数据、`resourceMetadataUrl` 派生已存；授权码 + PKCE + DCR 未实现，OAUTH2 配置现显式拒绝（501 + `-32004`） |
+| SVR-05/06 | Resource / Prompt 管理 | executor 运行时已就绪，manager 无管理模型 / UI / 组装 → 对外恒空清单 |
+| SVR-07 | 变更审核 | 覆盖 / 发布进待审批未做；现有「审核」仅覆盖跨部门访问申请（AccessService） |
+| PUB-05 | 发布可观测看板 | 健康 / 调用量看板，需与 Executor 指标打通 |
+| OPS-02 | W3C Trace Context | 当前仅 `X-Trace-Id` 响应回传，注入上游未做 |
+| SEC-03 | PIPL / GDPR 合规标注 | 数据分类分级标注未做 |
+
+### 部分完成（收尾项）
+
+| 编号 | 待办 | 已完成 | 待收尾 |
+| --- | --- | --- | --- |
+| REG-03 | 注册解析增强 | overlay 挂起区（suspendedOverlays diff） | re-import diff 报告；文档多版本历史链（现单份原文 sha256） |
+| EXE-04 | 健康剔除 | 轮询 / 加权 + 熔断 HALF_OPEN 探测 | 主动健康探测摘除 |
+| OPS-01 | Prometheus 指标 | executor pom 依赖就位 | `/metrics` 端点未见实现痕迹（待核实） |
+| MGM-05 | 审计 | 页面 + 动作已落地 | append-only 严格不可篡改未评估 |
+
+### 提前完成（勿重复排期）
+
+| 编号 | 说明 |
+| --- | --- |
+| PUB-04 | 发布回滚 |
+| EXE-04（主体） | 多实例轮询 · 加权 · 熔断 |
+| SVR-04 | 流式声明（SSE 声明 / 能力门控） |
+| 其他 | tool 级 Auth-B 覆盖（authBOverride）、审计页面与动作（MGM-05 主体） |
 
 ---
 
