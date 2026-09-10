@@ -29,7 +29,7 @@ import java.util.Optional;
  * @param endpoint        完整对外端点 {集群入口}/{保留前缀}/{末段}
  * @param authD           下行跳鉴权
  * @param authB           上行跳鉴权（Server 级默认；具体服务在 upstreams 里覆盖）
- * @param upstreams       上游服务列表（每个 REST 服务一个 UpstreamEntry，按 serviceId 索引）
+ * @param upstreams       REST 服务列表（每个服务一个 UpstreamEntry，按 serviceId 索引）
  * @param tools           生效 tool 列表（仅含 enabled=true）
  * @param resources       P1
  * @param prompts         P1

@@ -11,7 +11,7 @@ export function changed<T>(current: T, initial: T): T | undefined {
   return current === initial ? undefined : current
 }
 
-/** 多行文本 → 去空行、去首尾空白的数组（上游地址、静态令牌）。 */
+/** 多行文本 → 去空行、去首尾空白的数组（服务地址、静态令牌）。 */
 export function splitLines(text: string): string[] {
   return text
     .split(/\r?\n/)

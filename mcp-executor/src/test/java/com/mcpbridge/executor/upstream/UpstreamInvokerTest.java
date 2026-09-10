@@ -260,7 +260,8 @@ class UpstreamInvokerTest {
                         Duration.ofSeconds(5), Duration.ofSeconds(15),
                         Duration.ofSeconds(10), Duration.ofSeconds(5)),
                 new ExecutorProperties.Node("", "127.0.0.1", 9090, "0.1.0"),
-                new ExecutorProperties.Redis(false, "redis://localhost:6379", null, 0, "mcp",
+                new ExecutorProperties.Redis(false, ExecutorProperties.Redis.Mode.SINGLE,
+                        "redis://localhost:6379", null, null, 0, "mcp",
                         Duration.ofMinutes(30), Duration.ofSeconds(5), Duration.ofSeconds(30)),
                 new ExecutorProperties.Upstream(Duration.ofSeconds(3), Duration.ofSeconds(30), 1_048_576),
                 new ExecutorProperties.Protocol("mcp", 30_000));

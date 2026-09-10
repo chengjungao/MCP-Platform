@@ -6,12 +6,10 @@ import com.mcpbridge.common.protocol.McpProtocol;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.manager.config.ManagerProperties;
 import com.mcpbridge.manager.domain.AuditAction;
-import com.mcpbridge.manager.domain.BindingState;
 import com.mcpbridge.manager.domain.ExecutorCluster;
 import com.mcpbridge.manager.domain.ExecutorNode;
 import com.mcpbridge.manager.domain.NodeStatus;
 import com.mcpbridge.manager.repository.ExecutorNodeRepository;
-import com.mcpbridge.manager.repository.PublishBindingRepository;
 import com.mcpbridge.manager.security.NodePrincipal;
 import com.mcpbridge.manager.web.dto.ClusterDtos;
 import org.slf4j.Logger;
@@ -40,18 +38,15 @@ public class NodeService {
     private static final Logger log = LoggerFactory.getLogger(NodeService.class);
 
     private final ExecutorNodeRepository nodeRepository;
-    private final PublishBindingRepository bindingRepository;
     private final ClusterService clusterService;
     private final AuditService auditService;
     private final ManagerProperties properties;
 
     public NodeService(ExecutorNodeRepository nodeRepository,
-                       PublishBindingRepository bindingRepository,
                        ClusterService clusterService,
                        AuditService auditService,
                        ManagerProperties properties) {
         this.nodeRepository = nodeRepository;
-        this.bindingRepository = bindingRepository;
         this.clusterService = clusterService;
         this.auditService = auditService;
         this.properties = properties;
@@ -119,17 +114,7 @@ public class NodeService {
         nodeRepository.save(node);
 
         boolean changed = request.snapshotRevision() != cluster.getRevision();
-        return new ClusterDtos.HeartbeatResponse(cluster.getRevision(), changed, publishedPathSegments(clusterId));
-    }
-
-    @Transactional(readOnly = true)
-    public List<String> publishedPathSegments(Long clusterId) {
-        return bindingRepository.findByClusterIdAndCurrentTrue(clusterId).stream()
-                .filter(b -> b.getState() == BindingState.PUBLISHED && b.getSnapshot() != null)
-                .map(b -> Json.tree(b.getSnapshot()).path("pathSegment").asText(null))
-                .filter(java.util.Objects::nonNull)
-                .sorted()
-                .toList();
+        return new ClusterDtos.HeartbeatResponse(cluster.getRevision(), changed);
     }
 
     @Transactional

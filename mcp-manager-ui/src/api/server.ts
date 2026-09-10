@@ -38,7 +38,7 @@ export function update(id: number, request: ServerUpdateRequest): Promise<Server
   return put<ServerView>(`/servers/${id}`, request)
 }
 
-/** 按 serviceId upsert 单个上游服务配置（多服务支持）。 */
+/** 按 serviceId upsert 单个 REST 服务配置（多服务支持）。 */
 export function upsertUpstream(
   id: number,
   serviceId: string,
@@ -47,7 +47,7 @@ export function upsertUpstream(
   return put<ServerView>(`/servers/${id}/upstreams/${serviceId}`, request)
 }
 
-/** 删除某个上游服务（多服务场景下移除一份 Swagger 的上游配置）。 */
+/** 删除某个 REST 服务（多服务场景下移除一份 Swagger 对应的服务配置）。 */
 export function deleteUpstream(id: number, serviceId: string): Promise<ServerView> {
   return del<ServerView>(`/servers/${id}/upstreams/${serviceId}`)
 }

@@ -66,7 +66,7 @@ public class ServerController {
     public ApiResponse<ServerDtos.ServerView> create(@Valid @RequestBody ServerDtos.ServerCreateRequest request,
                                                      @AuthenticationPrincipal AuthPrincipal principal) {
         return ApiResponse.ok(serverService.create(request, principal),
-                "已创建空 Server，接下来在「上游服务」里注册 Swagger 文档");
+                "已创建空 Server，接下来在「REST 服务」里注册 Swagger 文档");
     }
 
     @DeleteMapping("/{id}")
@@ -86,7 +86,7 @@ public class ServerController {
                 "已保存，需重新发布后对 MCP Client 生效");
     }
 
-    /** 按 serviceId upsert 单个上游服务配置（EXE-03 / EXE-04，多服务支持）。 */
+    /** 按 serviceId upsert 单个 REST 服务配置（EXE-03 / EXE-04，多服务支持）。 */
     @PutMapping("/{id}/upstreams/{serviceId}")
     @PreAuthorize("hasAuthority('server:write')")
     public ApiResponse<ServerDtos.ServerView> upsertUpstream(@PathVariable Long id,
@@ -105,12 +105,13 @@ public class ServerController {
                 request.retryOnStatus(),
                 request.cbFailureThreshold(),
                 request.cbOpenMs(),
-                request.cbHalfOpenProbes());
+                request.cbHalfOpenProbes(),
+                request.authB());
         return ApiResponse.ok(serverService.upsertUpstream(id, merged, principal),
                 "已保存，需重新发布后对 MCP Client 生效");
     }
 
-    /** 删除某个上游服务（多服务场景下移除一份 Swagger 的上游配置）。 */
+    /** 删除某个 REST 服务（多服务场景下移除一份 Swagger 对应的服务配置）。 */
     @DeleteMapping("/{id}/upstreams/{serviceId}")
     @PreAuthorize("hasAuthority('server:write')")
     public ApiResponse<ServerDtos.ServerView> deleteUpstream(@PathVariable Long id,

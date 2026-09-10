@@ -8,7 +8,6 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -97,9 +96,12 @@ public final class ClusterDtos {
     }
 
     /**
+     * 心跳响应。刻意只回两个标量：心跳是 10s 级高频调用，任何「顺带的便利字段」都会变成
+     * 每个节点每 10s 一次的固定装配成本，而 Executor 侧并不消费它们（EXE-01）。
+     *
      * @param revision 控制面当前快照版本
      * @param changed  节点快照是否落后（true 时应立即拉取）
      */
-    public record HeartbeatResponse(long revision, boolean changed, List<String> publishedPathSegments) {
+    public record HeartbeatResponse(long revision, boolean changed) {
     }
 }

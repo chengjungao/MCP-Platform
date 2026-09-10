@@ -104,7 +104,13 @@ services:
       # nodeKey 留空时 Executor 用「主机名:端口」自述，容器环境下即容器 id，天然唯一
       EXECUTOR_NODE_HOST: executor-1
       EXECUTOR_REDIS_ENABLED: "true"
-      EXECUTOR_REDIS_ADDRESS: redis://redis:6379
+      # 单节点形态（编排里自带一个 redis 容器）。要连外部 Redis Cluster 时改这三行：
+      #   EXECUTOR_REDIS_MODE: cluster
+      #   EXECUTOR_REDIS_NODES: redis://h1:6379,redis://h2:6379,redis://h3:6379
+      #   （cluster 模式下 EXECUTOR_REDIS_ADDRESS 会被忽略）
+      EXECUTOR_REDIS_MODE: ${EXECUTOR_REDIS_MODE:-single}
+      EXECUTOR_REDIS_ADDRESS: ${EXECUTOR_REDIS_ADDRESS:-redis://redis:6379}
+      EXECUTOR_REDIS_NODES: ${EXECUTOR_REDIS_NODES:-}
       EXECUTOR_POLL_INTERVAL: 10s
       MCP_PATH_PREFIX: mcp
     ports:

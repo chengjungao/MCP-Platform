@@ -42,6 +42,16 @@ public class PublishBinding extends BaseEntity {
     @Column(name = "snapshot", columnDefinition = "jsonb")
     private String snapshot;
 
+    /**
+     * 快照指纹 {@code pathSegment:bindingVersion:toolCount}（EXE-01）。
+     *
+     * <p>单独成列是为了让集群 etag 的复算完全不碰 {@code snapshot}：{@code /revision} 是
+     * 每 10s 一轮的高频端点，读 jsonb 会 detoast 出整份快照，代价与「只想要一个字符串」不成比例。
+     * 算法必须与 {@code SnapshotAssembler.fingerprint} 和 V6 回填 SQL 保持一致。
+     */
+    @Column(name = "fingerprint", length = 320)
+    private String fingerprint;
+
     @Column(name = "published_by")
     private Long publishedBy;
 
@@ -66,6 +76,8 @@ public class PublishBinding extends BaseEntity {
     public void setCurrent(boolean current) { this.current = current; }
     public String getSnapshot() { return snapshot; }
     public void setSnapshot(String snapshot) { this.snapshot = snapshot; }
+    public String getFingerprint() { return fingerprint; }
+    public void setFingerprint(String fingerprint) { this.fingerprint = fingerprint; }
     public Long getPublishedBy() { return publishedBy; }
     public void setPublishedBy(Long publishedBy) { this.publishedBy = publishedBy; }
     public Instant getPublishedAt() { return publishedAt; }

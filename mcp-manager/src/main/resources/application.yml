@@ -100,4 +100,10 @@ logging:
     org.hibernate.SQL: WARN
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+  charset:
+    # 必须显式指定：Windows 中文环境下 Spring Boot 会把 System.console().charset()（=GBK）
+    # 取作 CONSOLE_LOG_CHARSET，而 JDK 18+ 的 file.encoding 已是 UTF-8。两边不一致时，
+    # 日志按 GBK 编码写出、终端按 UTF-8 解码，中文即乱码（表现为「�ڵ���ע��」）。
+    console: UTF-8
+    file: UTF-8
 # SEC-02：日志默认脱敏，凭据与疑似 PII 由 LogSanitizer 处理，不入日志

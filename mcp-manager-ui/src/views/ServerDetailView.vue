@@ -3,7 +3,6 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import AuthBPanel from '@/components/server/AuthBPanel.vue'
 import AuthDPanel from '@/components/server/AuthDPanel.vue'
 import BasicPanel from '@/components/server/BasicPanel.vue'
 import PublishPanel from '@/components/server/PublishPanel.vue'
@@ -101,13 +100,10 @@ onMounted(() => {
           <el-tab-pane label="基本信息" name="basic" lazy>
             <BasicPanel :server-id="serverId" :server="server" @saved="onSaved" />
           </el-tab-pane>
-          <el-tab-pane label="上游服务" name="upstream" lazy>
+          <el-tab-pane label="REST 服务" name="upstream" lazy>
             <UpstreamPanel :server-id="serverId" :server="server" @saved="onSaved" />
           </el-tab-pane>
-          <el-tab-pane label="上行授权 Auth-B" name="authb" lazy>
-            <AuthBPanel :server-id="serverId" @changed="load" />
-          </el-tab-pane>
-          <el-tab-pane label="下行授权 Auth-D" name="authd" lazy>
+          <el-tab-pane label="MCP 客户端授权 Auth-D" name="authd" lazy>
             <AuthDPanel :server-id="serverId" @changed="load" />
           </el-tab-pane>
           <el-tab-pane label="Tool 与覆盖" name="tools" lazy>

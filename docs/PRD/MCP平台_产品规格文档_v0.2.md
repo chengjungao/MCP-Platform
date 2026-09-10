@@ -47,7 +47,7 @@
 | # | 痛点 | 影响面 | 当前成本 |
 |---|---|---|---|
 | P1 | 每个 REST 服务要变成 MCP Server，都要写胶水代码（tool 声明、JSON Schema、鉴权注入、错误映射） | 有 REST 资产的团队 | 单个服务 1~3 人日，且难维护 |
-| P2 | 上游 REST 的鉴权方式五花八门（API Key/Bearer/Basic/OAuth2），没有统一注入与密钥托管 | 服务负责人/安全 | 密钥散落各配置，易泄露 |
+| P2 | REST 服务的鉴权方式五花八门（API Key/Bearer/Basic/OAuth2），没有统一注入与密钥托管 | 服务负责人/安全 | 密钥散落各配置，易泄露 |
 | P3 | 远程 MCP Server 的协议合规（OAuth 2.1、流式、无状态路由）门槛高，普通团队做不达标 | 想对外提供 MCP 能力的团队 | 学习 + 实现成本高 |
 | P4 | 企业内"谁能把接口暴露成 Agent 工具"没有治理：无部门归属、无角色权限、无发布记录 | 平台/安全团队 | 影子暴露，审计缺失 |
 | P5 | 解析出的工具不满足 Agent 使用质量（描述差、参数 schema 粗糙、命名乱），需要人工精修但**不想改原始 Swagger 文档** | Agent 应用开发者 | 改原文污染共享契约 |
@@ -229,12 +229,12 @@ erDiagram
 
 | 跳 | 方向 | 需求出处 | 方案 |
 |---|---|---|---|
-| 下行跳 Auth-D | MCP Client → Executor | MCP 2026-07-28 规范 | 每 Server 可配：`none`（仅内网/信任网段，P0）/ `static-bearer`（平台签发 Client 令牌，P0）/ **OAuth 2.1 完整资源服务器**（P1 必达，见 FR-EXE-07） |
-| 上行跳 Auth-B | Executor → 用户 REST API | 需求 4 | 用户配置：`none / apiKey(header/query) / http bearer / basic / oauth2 client_credentials / 自定义Header模板（支持引用平台密钥）`，凭据加密托管，Executor 调用时注入 |
+| Auth-D（MCP 客户端授权） | MCP 客户端 → Executor | MCP 2026-07-28 规范 | 每 Server 可配：`none`（仅内网/信任网段，P0）/ `static-bearer`（平台签发 Client 令牌，P0）/ **OAuth 2.1 完整资源服务器**（P1 必达，见 FR-EXE-07） |
+| Auth-B（REST 服务鉴权） | Executor → REST 服务 | 需求 4 | 每个 REST 服务独立配置：`none / apiKey(header/query) / http bearer / basic / oauth2 client_credentials / 自定义Header模板（支持引用平台密钥）`，凭据加密托管，Executor 调用时注入 |
 
 - Auth-B 的密钥**永不下发**给 MCP Client（吸收 openapi-mcp 安全经验）；
 - OAuth2 client_credentials 令牌在 Executor 侧缓存 + **过期前刷新 + 多节点刷新锁**（防惊群），见 §5.6；
-- 同一 REST 服务内部若个别接口鉴权不同 → 支持 tool 级覆盖 Auth-B（P1）。
+- 同一 REST 服务内部若个别接口鉴权不同 → 支持 tool 级覆盖 Auth-B（P1）；不同 REST 服务之间的 Auth-B 天然隔离，各配一份。
 
 **BR-5 流式接口（需求约束，附风险提示）**
 - 注册/精修时标注端点是否流式及流格式（`SSE / NDJSON / chunked`，Swagger 中可由 `text/event-stream` 或扩展字段辅助识别，识别不出的人工标注）；
@@ -297,7 +297,7 @@ erDiagram
 |---|---|---|---|
 | SVR-01 | Server 基础信息：名称/描述/PATH 末段/协议版本（默认 2026-07-28）/可见性 | P0 | PATH 规则校验 + 唯一性校验即时反馈 |
 | SVR-02 | Tool 管理：列表（含映射自 operation 的只读基座）、启用/停用、**覆盖** name/description/inputSchema（增删改参数/示例） | P0 | 覆盖后 diff 视图可见；原始文档只读（sha256 校验） |
-| SVR-03 | Auth-B 配置：上述 6 种方案 + 凭据加密存储 + 脱敏回显（P1 支持 tool 级覆盖） | P0 | 凭据保存后回显为掩码；接口层无明文返回 |
+| SVR-03 | Auth-B 配置（**按 REST 服务维度**，每个服务一份）：上述 6 种方案 + 凭据加密存储 + 脱敏回显（P1 支持 tool 级覆盖） | P0 | 凭据保存后回显为掩码；接口层无明文返回 |
 | SVR-04 | 流式声明：端点级标注是否流式 + 流格式（见 BR-5 / RT-1） | P1 | 标注在 diff 视图与运行时均生效 |
 | SVR-05 | Resource 管理：手动定义（URI/描述/内容或映射 GET operation） | P1 | resources/list、resources/read 按 2026-07-28 返回含 ttlMs |
 | SVR-06 | Prompt 管理：手动定义模板，可引用 tool | P1 | prompts/list 返回缓存头 |
@@ -508,10 +508,13 @@ stateDiagram-v2
 
 | 术语 | 含义 |
 |---|---|
+| REST 服务 | 一个 MCP Server 下挂的每个 REST 服务（一份 Swagger 对应一个），各自独立的 baseUrls / 负载均衡 / 熔断 / Auth-B |
+| MCP 客户端 | 通过 MCP 协议调用平台的客户端（Codex、Claude 等）。**本文档的「上游 / 下游」一律以数据流方向为准**：REST 服务是上游（提供方），MCP 客户端是下游（消费方） |
 | 注册（Registration） | 用户提交一份 Swagger/OpenAPI 文档（文件或 URL） |
 | 基座模型（Base Model） | 解析文档得到的、不可手工直接修改的 Server/Tool 默认定义 |
 | 覆盖层（Overlay） | 用户对基座的精修，版本化存储，独立于原始文档 |
 | 生效模型（Effective Model） | base ⊕ overlay 的运行时视图，Executor 实际加载的内容 |
-| Auth-D / Auth-B | 下行（Client→Executor）与上行（Executor→REST）两跳鉴权 |
+| Auth-D（MCP 客户端授权） | MCP 客户端 → Executor 这一跳的鉴权，下行 |
+| Auth-B（REST 服务鉴权） | Executor → REST 服务这一跳的鉴权，上行；每个 REST 服务各配一份，互相独立 |
 | 共享/私有集群 | Executor 集群的两种部署与多租户形态（§5.4） |
 | binding | Server 在某集群上的发布记录（版本化、可回滚） |

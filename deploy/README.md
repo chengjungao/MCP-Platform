@@ -21,6 +21,28 @@ MCP 客户端 ──► http://localhost:9090/mcp/{末段}   ← 集群入口（
 （BR-6），不承载路由信息。因此 Redis 挂掉时端点仍可服务，只是退化为
 「每个节点各自向上游换取一次令牌」，这个降级会显式记在启动日志与 `/executor/status` 里。
 
+## 换成 Redis Cluster
+
+编排自带的 `redis` 容器是单节点形态。要改连外部 Redis Cluster，只需在 `deploy/.env` 里换两行：
+
+```bash
+EXECUTOR_REDIS_MODE=cluster
+EXECUTOR_REDIS_NODES=redis://h1:6379,redis://h2:6379,redis://h3:6379
+```
+
+- `EXECUTOR_REDIS_ADDRESS` 在 cluster 模式下**不生效**，可以不删；
+- 节点地址可省略 `redis://` 前缀（会自动补），`rediss://`（TLS）会被原样保留；
+- `EXECUTOR_REDIS_DATABASE` 只在 single 模式生效——Redis Cluster 只有 db0，配了非 0 会 WARN 后忽略；
+- 节点列表**只需给种子节点**，分片拓扑由 Redisson 自动发现并每 1s 刷新。
+
+切换形态不影响任何业务代码：共享状态只用到 `RBucket` / `RLock` / `RTopic` 三个单键原语，
+没有跨槽（CROSSSLOT）操作。若同时想把自带的 redis 容器也去掉，把两个 executor 的
+`depends_on.redis` 一并删掉即可。
+
+配置写错时**会启动失败而不是静默降级**：cluster 模式没给 `EXECUTOR_REDIS_NODES`、
+single 模式没给 `EXECUTOR_REDIS_ADDRESS` 都会让 Executor 起不来，并在日志里指出该改哪个 key。
+只有「配置正确但连不上」才退化为单节点内存模式。
+
 ## 前置
 
 镜像只负责运行时，不在容器里编译。后端先产出两个可执行 jar：

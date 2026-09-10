@@ -5,8 +5,12 @@ import com.mcpbridge.common.snapshot.PublishedSnapshot;
 import com.mcpbridge.common.snapshot.ServerSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.snapshot.UpstreamSnapshot;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.List;
@@ -141,6 +145,57 @@ class SnapshotStoreTest {
 
         assertThat(store.server("nope")).isEmpty();
         assertThat(store.server(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("快照更新日志带出对外端点，运维可直接拷去配置 MCP 客户端")
+    void logsPublishedEndpointsOnReplace() {
+        ListAppender<ILoggingEvent> appender = attachAppender();
+        try {
+            store.replace(snapshot(3L, "\"3\"", server(10L, "user"), server(11L, "order")));
+
+            // 端点按 PATH 末段排序，保证跨次同步的日志可以直接逐字比对
+            assertThat(syncLogLines(appender))
+                    .containsExactly("发布快照已更新 cluster=shared:default revision=3 etag=\"3\""
+                            + " servers=2 tools=0"
+                            + " endpoints=http://gw.local/mcp/order, http://gw.local/mcp/user");
+        } finally {
+            detachAppender(appender);
+        }
+    }
+
+    @Test
+    @DisplayName("空快照的端点占位为 -，避免日志出现 endpoints= 的歧义空值")
+    void logsPlaceholderWhenNoEndpoint() {
+        ListAppender<ILoggingEvent> appender = attachAppender();
+        try {
+            store.replace(snapshot(1L, "\"1\"", server(10L, null)));
+
+            assertThat(syncLogLines(appender)).hasSize(1);
+            assertThat(syncLogLines(appender).get(0)).endsWith("endpoints=-");
+        } finally {
+            detachAppender(appender);
+        }
+    }
+
+    /** 只取「发布快照已更新」这一行，避免受其它日志（如同步失败告警）干扰。 */
+    private static List<String> syncLogLines(ListAppender<ILoggingEvent> appender) {
+        return appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(m -> m.startsWith("发布快照已更新"))
+                .toList();
+    }
+
+    private static ListAppender<ILoggingEvent> attachAppender() {
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        ((Logger) LoggerFactory.getLogger(SnapshotStore.class)).addAppender(appender);
+        return appender;
+    }
+
+    private static void detachAppender(ListAppender<ILoggingEvent> appender) {
+        ((Logger) LoggerFactory.getLogger(SnapshotStore.class)).detachAppender(appender);
+        appender.stop();
     }
 
     // ------------------------------------------------------------------ 夹具

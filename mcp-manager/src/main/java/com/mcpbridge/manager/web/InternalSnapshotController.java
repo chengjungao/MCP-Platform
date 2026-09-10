@@ -3,7 +3,9 @@ package com.mcpbridge.manager.web;
 import com.mcpbridge.common.error.ErrorCode;
 import com.mcpbridge.common.error.PlatformException;
 import com.mcpbridge.common.snapshot.PublishedSnapshot;
+import com.mcpbridge.manager.domain.ExecutorCluster;
 import com.mcpbridge.manager.security.NodePrincipal;
+import com.mcpbridge.manager.service.ClusterService;
 import com.mcpbridge.manager.service.PublishService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -22,8 +24,9 @@ import java.util.Map;
  *
  * <p>两个端点分工明确：
  * <ul>
- *   <li>{@code /revision}：只回 {@code revision + etag}，是 Executor 的高频轮询目标，
- *       代价近似一次索引查询；</li>
+ *   <li>{@code /revision}：只回 {@code clusterKey + revision + etag} 三个标量，是 Executor 的
+ *       高频轮询目标（10s 级）。<b>不读 jsonb</b>——etag 由 {@code publish_binding.fingerprint}
+ *       投影列算出，代价是一次索引查询加一次短字符串哈希；</li>
  *   <li>{@code /snapshot}：回完整快照。带 {@code If-None-Match} 且匹配时返回 304 空体，
  *       避免每 10 秒把几 MB 的 JSON 重复推给每个节点。</li>
  * </ul>
@@ -36,21 +39,28 @@ import java.util.Map;
 public class InternalSnapshotController {
 
     private final PublishService publishService;
+    private final ClusterService clusterService;
 
-    public InternalSnapshotController(PublishService publishService) {
+    public InternalSnapshotController(PublishService publishService, ClusterService clusterService) {
         this.publishService = publishService;
+        this.clusterService = clusterService;
     }
 
+    /**
+     * 轻量轮询端点：只回标量，不碰 {@code publish_binding.snapshot}。
+     *
+     * <p>改造前这里走的是集群全量装配（detoast 全部 jsonb + 反序列化 + 排序 + 算 etag），
+     * 与「每 10s 每节点一次」的调用频次完全不匹配。现在读的是
+     * {@code executor_cluster} 的两个标量列 + 一次 {@code fingerprint} 投影查询。
+     */
     @GetMapping("/{clusterId}/revision")
     public Map<String, Object> revision(@PathVariable Long clusterId,
                                         @AuthenticationPrincipal NodePrincipal principal) {
-        PublishedSnapshot snapshot = snapshot(clusterId, principal);
+        ExecutorCluster cluster = requireCluster(clusterId, principal);
         return Map.of(
-                "clusterKey", snapshot.clusterKey(),
-                "revision", snapshot.revision(),
-                "etag", snapshot.etag(),
-                "serverCount", snapshot.serverCount(),
-                "toolCount", snapshot.toolCount());
+                "clusterKey", cluster.getName(),
+                "revision", cluster.getRevision(),
+                "etag", publishService.clusterEtag(cluster));
     }
 
     @GetMapping("/{clusterId}/snapshot")
@@ -71,12 +81,12 @@ public class InternalSnapshotController {
     }
 
     private PublishedSnapshot snapshot(Long clusterId, NodePrincipal principal) {
-        requireSameCluster(clusterId, principal);
+        requireCluster(clusterId, principal);
         return publishService.clusterSnapshot(clusterId);
     }
 
-    /** 令牌归属集群与请求的集群必须一致；引导令牌一律拒绝。 */
-    private static void requireSameCluster(Long clusterId, NodePrincipal principal) {
+    /** 令牌归属集群与请求的集群必须一致；引导令牌一律拒绝。返回集群供调用方复用。 */
+    private ExecutorCluster requireCluster(Long clusterId, NodePrincipal principal) {
         if (principal == null) {
             throw new PlatformException(ErrorCode.UNAUTHENTICATED, "缺少节点身份");
         }
@@ -89,6 +99,7 @@ public class InternalSnapshotController {
             throw new PlatformException(ErrorCode.FORBIDDEN, "令牌不属于该集群，拒绝跨集群拉取快照",
                     Map.of("tokenClusterId", principal.clusterId(), "requestedClusterId", clusterId));
         }
+        return clusterService.require(clusterId);
     }
 
     /** If-None-Match 可能是逗号分隔的多个 etag，也可能带 W/ 弱校验前缀。 */

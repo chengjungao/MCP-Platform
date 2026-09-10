@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,10 +64,27 @@ public class SnapshotStore {
         boolean advanced = previous == null || previous.revision() != next.revision();
         if (advanced) {
             appliedRevisions.incrementAndGet();
-            log.info("发布快照已更新 cluster={} revision={} etag={} servers={} tools={}",
-                    next.clusterKey(), next.revision(), next.etag(), next.serverCount(), next.toolCount());
+            log.info("发布快照已更新 cluster={} revision={} etag={} servers={} tools={} endpoints={}",
+                    next.clusterKey(), next.revision(), next.etag(), next.serverCount(), next.toolCount(),
+                    endpointsOf(next));
         }
         return advanced;
+    }
+
+    /**
+     * 快照内的对外发布端点清单，按 PATH 末段排序保证日志可比对。
+     *
+     * <p>端点直接来自快照的 {@code endpoint} 字段（{集群入口}/{保留前缀}/{末段}），
+     * 运维可据此直接拷去配置 MCP 客户端，不必再回控制台查。
+     */
+    private String endpointsOf(PublishedSnapshot snapshot) {
+        String joined = snapshot.safeServers().stream()
+                .filter(s -> s.pathSegment() != null)
+                .sorted(Comparator.comparing(ServerSnapshot::pathSegment))
+                .map(s -> s.endpoint() == null || s.endpoint().isBlank() ? s.pathSegment() : s.endpoint())
+                .collect(Collectors.joining(", "));
+        // 空集群（发布了下线等场景）明确打出占位符，避免日志出现 "endpoints=" 的空值歧义
+        return joined.isEmpty() ? "-" : joined;
     }
 
     public PublishedSnapshot current() {

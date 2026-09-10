@@ -73,7 +73,7 @@ async function submit(): Promise<void> {
       registrationEndpoint: form.registrationEndpoint.trim() || undefined
     })
     form.staticTokensText = ''
-    ElMessage.success('下行授权已保存，重新发布后生效')
+    ElMessage.success('MCP 客户端授权已保存，重新发布后生效')
     emit('changed')
   } catch (error) {
     notifyError(error)
@@ -155,7 +155,7 @@ onMounted(() => {
       </el-form-item>
 
       <el-form-item>
-        <el-button type="primary" :loading="saving" :disabled="!canWrite" @click="submit">保存下行授权</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!canWrite" @click="submit">保存MCP 客户端授权</el-button>
         <el-button :disabled="!canWrite" @click="load">重置</el-button>
         <span v-if="!canWrite" class="muted hint">当前账号没有 auth:write 权限</span>
       </el-form-item>

@@ -27,11 +27,11 @@
 | --- | --- |
 | REST 服务 / Swagger | 你要对外暴露的既有接口，用一份 OpenAPI/Swagger 文档描述 |
 | 注册解析 | 把 Swagger 文档收进平台，解析成可治理的结构（支持 URL / 上传文件 / 粘贴内容三种方式） |
-| Server | 一个 MCP Server 逻辑单元 = 一个对外 PATH 端点 + 若干上游 REST 服务 |
-| 上游服务 | Server 下挂的每个 REST 服务（一份 Swagger 对应一个上游，含独立超时/重试/熔断/鉴权） |
+| Server | 一个 MCP Server 逻辑单元 = 一个对外 PATH 端点 + 若干 REST 服务 |
+| REST 服务 | Server 下挂的每个 REST 服务（一份 Swagger 对应一个，含独立的超时/重试/熔断/鉴权） |
 | Tool | 由 Swagger 的每个 operation 自动生成的 MCP 工具（如 `GET /api/orders` → `t_listOrders`） |
 | 覆盖（overlay） | 对 Tool 的二次精修：改名、改参数 Schema、启用/停用，不污染原始文档 |
-| Auth-B（上行授权） | 平台**调用上游 REST** 时携带的鉴权（Bearer、Basic、Client Credentials 等） |
+| Auth-B（REST 服务鉴权） | 平台**调用 REST 服务**时携带的鉴权（Bearer、Basic、Client Credentials 等）；每个 REST 服务各配一份 |
 | Auth-D（下行授权） | 客户端**调用平台 MCP 端点**时的鉴权（NONE / STATIC_BEARER 两种可用形态） |
 | 发布 | 把 Server 的生效快照下发到集群 Executor，对外提供服务；支持下线与回滚 |
 | MCP 端点 | 发布后客户端访问的地址，形如 `{集群入口}/{前缀}/{PATH 末段}`，例如 `http://localhost:9090/mcp/order` |
@@ -49,7 +49,7 @@ flowchart LR
 
     subgraph MCP 桥接平台
         B["注册解析<br/>URL / 上传 / 粘贴"]
-        C["Server 精修<br/>Tool 覆盖 · Auth-B · Auth-D"]
+        C["REST 服务精修<br/>连接策略 · Auth-B · Auth-D"]
         D["发布到集群<br/>生成 MCP 端点"]
     end
 
@@ -90,7 +90,7 @@ flowchart LR
 
 列表「域名」列展示**发布后**的 MCP 端点（未发布显示「未发布，无端点」）；状态为「已发布」表示当前可被客户端访问。示例环境中的 `order` Server：Tool 5/5、端点 `http://localhost:9090/mcp/order`。
 
-新建对话框会提示：创建后得到的是一个**空 Server（无 tool、无上游）**，接下来到详情页「上游服务」注册文档。
+新建对话框会提示：创建后得到的是一个**空 Server（无 tool、无 REST 服务）**，接下来到详情页「REST 服务」注册文档。
 
 ### 5.3 基本信息
 
@@ -108,9 +108,9 @@ Server 详情页第一个 Tab「基本信息」：
 
 ![基本信息](images/2026-09-07%2015%2054%2028.png)
 
-### 5.4 上游服务：注册 Swagger + 配置上游
+### 5.4 REST 服务：注册 Swagger + 配置连接与鉴权
 
-这是「注册 REST API」动作发生的地方。切到「上游服务」Tab，点击 **注册文档到本 Server**，弹窗提供三种收文档方式：
+这是「注册 REST API」动作发生的地方。切到「REST 服务」Tab，点击 **注册文档到本 Server**，弹窗提供三种收文档方式：
 
 | Tab | 用法 | 适用 |
 | --- | --- | --- |
@@ -122,7 +122,7 @@ Server 详情页第一个 Tab「基本信息」：
 
 注册成功后会提示生成了几个接口，并自动在「订阅服务」区创建一条上游条目（服务标识 = 注册记录 ID）。解析**失败**（FAILED）时会当场弹出诊断详情（语法错误行等），修正文档后重新注册即可。
 
-![上游服务](images/2026-09-07%2015%2055%2055.png)
+![REST 服务](images/2026-09-07%2015%2055%2055.png)
 
 点上游条目可展开编辑，字段含义：
 
@@ -136,7 +136,7 @@ Server 详情页第一个 Tab「基本信息」：
 | 重试状态码 | 命中即重试 | 502, 500, 504 |
 | 熔断（失败阈值 / 半开 / 并发） | 连续失败阈值（如 5 次）开闸，半开窗口期探测，并发上限 | 5 / 30000ms / 2 |
 
-**一份 Swagger = 一个上游服务**；同一个 Server 可以聚合多份 Swagger（多上游），tool 注册时自动绑定到所属上游，调用时按归属路由（对应不同 baseUrls / 熔断 / Auth-B，互不影响）。
+**一份 Swagger = 一个 REST 服务**；同一个 Server 可以聚合多份 Swagger（多服务），tool 注册时自动绑定到所属服务，调用时按归属路由（对应不同 baseUrls / 熔断 / Auth-B，互不影响）。
 
 ### 5.5 Tool 与覆盖
 
@@ -158,8 +158,8 @@ Server 详情页第一个 Tab「基本信息」：
 
 ### 5.6 授权配置（按需）
 
-- **上行授权 Auth-B**（平台 → 上游 REST）：支持 NONE / Bearer / Basic / API Key / OAuth2 Client Credentials 等。凭据经 AES-256-GCM 加密后入库，界面只显示掩码，不留空框=不修改。
-- **下行授权 Auth-D**（客户端 → 平台 MCP 端点）：
+- **Auth-B（REST 服务鉴权，平台 → REST 服务）**：**在「REST 服务」Tab 内配置，每个 REST 服务各持一份**——选中某个服务后，表单下半部分即是它的鉴权配置。支持 NONE / Bearer / Basic / API Key / OAuth2 Client Credentials / 自定义 Header 模板。凭据经 AES-256-GCM 加密后入库，界面只显示掩码，留空=不修改；改动随「保存服务配置」一起提交。
+- **Auth-D（MCP 客户端授权，客户端 → 平台 MCP 端点）**：在「MCP 客户端授权 Auth-D」Tab 配置，作用于整个 Server。
   - `NONE`：端点公开，无需令牌；
   - `STATIC_BEARER`：客户端请求需带 `Authorization: Bearer <令牌>`。令牌在「静态令牌」框**一行一个**粘贴（不含 `Bearer ` 前缀）。⚠️ 平台只存 sha256、**明文无法回显**，每次保存是整体替换——漏填等于吊销其余全部，请妥善保管自己生成的令牌；
   - `OAUTH2`：当前版本仅保存元数据，运行时**显式拒绝（501 / `-32004`）**，请勿在生产选用。
@@ -308,7 +308,7 @@ export MCP_BEARER_TOKEN="粘贴你在平台配置的静态令牌"   # 建议写�
 | F1 | 客户端报 `-32022 UNSUPPORTED_PROTOCOL_VERSION` | 客户端用的还是 legacy 协议形态（如带 `Mcp-Session-Id` / 老版本号）。平台 Modern-only、**不做版本协商**：升级客户端到支持 MCP 2026-07-28 的版本，或按错误 `data.upgradeUrl` 处理 |
 | F2 | 调用返回 `401` / `-32004 UNAUTHORIZED` | Auth-D = STATIC_BEARER 时令牌缺失、写错或已被吊销。核对令牌与 `Bearer ` 前缀；令牌管理是整体替换，改过一次后旧令牌即失效 |
 | F3 | `-32002 TOOL_NOT_FOUND` | Tool 不存在 / 已被停用 / 被标记为流式（流式属 P1，未实现前会从 `tools/list` 剔除并拒绝调用） |
-| F4 | `-32003 UPSTREAM_ERROR`（或上游 502） | 上游 REST 超时 / 5xx / 熔断打开。先确认上游服务本身健康；熔断触发后等半开窗口自动探测恢复 |
+| F4 | `-32003 UPSTREAM_ERROR`（或上游 502） | 上游 REST 超时 / 5xx / 熔断打开。先确认 REST 服务本身健康；熔断触发后等半开窗口自动探测恢复 |
 | F5 | 改了配置但客户端行为没变 | 所有修改都要到「差异与发布」**重新发布**才生效；同时注意客户端侧的 tools/list 缓存（TTL 30000ms） |
 | F6 | 忘记 Auth-D 静态令牌 | 平台只存 sha256，**无法找回明文**；在「下行授权 Auth-D」整体替换为新令牌并重新发布，然后更新客户端环境变量 |
 | F7 | 想删除 Server 但被拒（409） | 该 Server 仍发布在集群上（current && PUBLISHED）。先在发布记录里下线，再删除；删除会连带清理文档记录与授权，不可恢复 |

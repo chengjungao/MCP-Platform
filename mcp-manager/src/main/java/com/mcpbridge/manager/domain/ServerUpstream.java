@@ -7,14 +7,15 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * 一个 MCP Server 挂载的一个上游 REST 服务（多服务支持）。
+ * 一个 MCP Server 挂载的一个 REST 服务（多服务支持）。
  *
  * <p>一个 Server 可有多条 {@code ServerUpstream}（按 {@code serviceId} 区分），
  * 每条对应一份 Swagger 文档（一个 {@link ApiRegistration}）。Tool 的
  * {@code McpTool.upstreamRef} 指向其中的 {@code serviceId}，运行时按此选所属上游。
  *
- * <p>Auth-B 下沉到本表：同一 Server 内不同 REST 服务可有不同上行鉴权，
- * {@code authB} 是本服务专属的已加密凭据 JSON（{@code AuthBSnapshot} 序列化）。
+ * <p>本服务的上行鉴权（Auth-B）独立存放在 {@code auth_config} 表的
+ * {@code (server_id, upstream_service_id)} 维度上，由 AuthConfigService 读写——
+ * 同一 Server 内不同 REST 服务因此可以各用一套凭据。
  *
  * @see McpServer#getUpstreams()
  * @see McpTool#getUpstreamRef()
@@ -65,11 +66,6 @@ public class ServerUpstream extends BaseEntity {
     @Column(name = "circuit_breaker", columnDefinition = "jsonb")
     private String circuitBreaker;
 
-    /** 本服务专属上行鉴权（AuthBSnapshot 序列化 JSON，已加密凭据）。 */
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "auth_b", columnDefinition = "jsonb")
-    private String authB;
-
     public Long getServerId() { return serverId; }
     public void setServerId(Long serverId) { this.serverId = serverId; }
     public String getServiceId() { return serviceId; }
@@ -92,6 +88,4 @@ public class ServerUpstream extends BaseEntity {
     public void setRetryOnStatus(String retryOnStatus) { this.retryOnStatus = retryOnStatus; }
     public String getCircuitBreaker() { return circuitBreaker; }
     public void setCircuitBreaker(String circuitBreaker) { this.circuitBreaker = circuitBreaker; }
-    public String getAuthB() { return authB; }
-    public void setAuthB(String authB) { this.authB = authB; }
 }

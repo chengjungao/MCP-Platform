@@ -1,5 +1,6 @@
 package com.mcpbridge.manager.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.mcpbridge.common.snapshot.AuthBSnapshot;
 import com.mcpbridge.common.snapshot.AuthDSnapshot;
 import com.mcpbridge.common.snapshot.PublishedSnapshot;
@@ -36,8 +37,10 @@ import java.util.stream.Collectors;
  *       快照按 PATH 末段排序拼装，并计算稳定 etag 支持增量轮询。</li>
  * </ul>
  *
- * <p>etag 只由「集群名 + revision + 各 Server 的 pathSegment:bindingVersion」决定，
- * 不含生成时间，因此多 Manager 实例与重启后都能给出一致结果（EXE-01 的 304 语义依赖它）。
+ * <p>etag 只由「集群名 + revision + 各绑定固化在 {@code fingerprint} 列上的
+ * {@code pathSegment:bindingVersion:toolCount}」决定，<b>不含生成时间、也不需要读 jsonb</b>，
+ * 因此多 Manager 实例与重启后都能给出一致结果（EXE-01 的 304 语义依赖它），
+ * 而 {@code /revision} 这个 10s 级热点可以只读标量列。
  */
 @Service
 public class SnapshotAssembler {
@@ -94,10 +97,14 @@ public class SnapshotAssembler {
     /** 组装集群快照：只纳入 current 且 PUBLISHED 的绑定。 */
     public PublishedSnapshot cluster(ExecutorCluster cluster, List<PublishBinding> currentBindings) {
         List<ServerSnapshot> servers = new ArrayList<>();
+        List<String> fingerprints = new ArrayList<>();
         for (PublishBinding binding : currentBindings) {
             if (binding.getState() != BindingState.PUBLISHED || binding.getSnapshot() == null) {
                 continue;
             }
+            // etag 走指纹列，不走反序列化结果：与 /revision 的投影查询口径逐字一致，
+            // 否则单个损坏快照会让两个端点的 etag 分叉，Executor 会退化成每轮都拉一次 /snapshot。
+            fingerprints.add(binding.getFingerprint());
             try {
                 ServerSnapshot snapshot = Json.read(binding.getSnapshot(), ServerSnapshot.class);
                 if (snapshot != null) {
@@ -112,14 +119,32 @@ public class SnapshotAssembler {
         servers.sort(Comparator.comparing(ServerSnapshot::pathSegment,
                 Comparator.nullsLast(Comparator.<String>naturalOrder())));
         long revision = cluster.getRevision();
-        return new PublishedSnapshot(revision, etag(cluster.getName(), revision, servers),
+        return new PublishedSnapshot(revision, etag(cluster.getName(), revision, fingerprints),
                 Instant.now(), cluster.getName(), servers);
     }
 
-    /** 稳定 etag：与生成时间无关，可安全用于 If-None-Match。 */
-    public static String etag(String clusterKey, long revision, List<ServerSnapshot> servers) {
-        String fingerprint = servers.stream()
-                .map(s -> s.pathSegment() + ":" + s.bindingVersion() + ":" + s.safeTools().size())
+    /**
+     * 单条绑定的快照指纹 {@code pathSegment:bindingVersion:toolCount}。
+     *
+     * <p>被固化进 {@code publish_binding.fingerprint}，是集群 etag 的唯一输入。
+     * <b>算法必须与 {@code V6__publish_binding_fingerprint.sql} 的回填 SQL 逐字一致</b>，
+     * 否则历史行与新行的 etag 会对不上（同一份快照算出两个 etag，304 永远不命中）。
+     */
+    public static String fingerprint(String snapshotJson, long bindingVersion) {
+        JsonNode node = Json.tree(snapshotJson);
+        JsonNode tools = node.path("tools");
+        int toolCount = tools.isArray() ? tools.size() : 0;
+        return node.path("pathSegment").asText("") + ":" + bindingVersion + ":" + toolCount;
+    }
+
+    /**
+     * 稳定 etag：与生成时间无关，可安全用于 If-None-Match。
+     *
+     * @param fingerprints 各 current 绑定的指纹，顺序无关（内部排序）
+     */
+    public static String etag(String clusterKey, long revision, List<String> fingerprints) {
+        String fingerprint = fingerprints.stream()
+                .map(f -> f == null ? "-" : f)
                 .sorted()
                 .collect(Collectors.joining(","));
         return "\"" + Hashing.shortSha256(clusterKey + "|" + revision + "|" + fingerprint) + "\"";

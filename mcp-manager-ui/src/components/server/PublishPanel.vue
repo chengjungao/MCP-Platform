@@ -276,7 +276,7 @@ onMounted(() => {
       <template #default>
         <ul class="checklist">
           <li>协议版本必须是 <span class="mono">{{ server.protocolVersion }}</span>（决策 D1：只支持 Modern）</li>
-          <li>至少配置一个上游地址，否则 Executor 无法转发调用</li>
+          <li>至少配置一个服务地址，否则 Executor 无法转发调用</li>
           <li>至少有一个启用状态的 tool，否则发布后 tools/list 是空的</li>
           <li>生效 tool 名不能重复（覆盖改名容易撞车）</li>
           <li>PATH 末段合法且没有被多个 Server 占用（BR-3，写入时已校验，发布时再确认一次防并发）</li>
@@ -306,7 +306,7 @@ onMounted(() => {
           <el-table-column prop="name" label="tool 名" min-width="180">
             <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
           </el-table-column>
-          <el-table-column label="上游" min-width="220">
+          <el-table-column label="REST 服务" min-width="220">
             <template #default="{ row }">
               <el-tag size="small" effect="plain">{{ row.method }}</el-tag>
               <span class="mono small path">{{ row.path }}</span>
@@ -539,7 +539,7 @@ onMounted(() => {
 
         <el-alert v-if="authDMode === 'OAUTH2'" type="warning" :closable="false" show-icon class="tip">
           <template #title>该 Server 配置了 OAuth 2.1 下行鉴权，属 P1 能力，Executor 当前会返回 501</template>
-          <template #default>请先在「下行授权 Auth-D」改为 STATIC_BEARER 或 NONE，否则下方配置无法连通。</template>
+          <template #default>请先在「MCP 客户端授权 Auth-D」改为 STATIC_BEARER 或 NONE，否则下方配置无法连通。</template>
         </el-alert>
 
         <el-form v-if="tokenRequired" label-width="96px" class="token-form">

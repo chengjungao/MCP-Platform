@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 按上游服务（serverId:serviceId）维度的熔断器（EXE-03）。
+ * 按 REST 服务（serverId:serviceId）维度的熔断器（EXE-03）。
  *
  * <p><b>刻意不做跨节点共享</b>，尽管我们已经有了 Redis。理由是它度量的不是「上游挂了」，
  * 而是「<i>本节点到某上游</i>的链路挂了」：Executor-2 到上游专线抖动时，

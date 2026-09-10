@@ -205,7 +205,7 @@ export interface UpstreamSnapshot {
   }
 }
 
-/** 多上游场景下单个上游服务视图（后端 ServerDtos.UpstreamView）。 */
+/** 多服务场景下单个 REST 服务视图（后端 ServerDtos.UpstreamView）。 */
 export interface UpstreamView {
   serviceId: string
   name: string
@@ -214,7 +214,7 @@ export interface UpstreamView {
   updatedAt?: string
 }
 
-/** 按 serviceId upsert 单个上游服务的请求（后端 ServerDtos.UpstreamEntryRequest）。 */
+/** 按 serviceId upsert 单个 REST 服务的请求（后端 ServerDtos.UpstreamEntryRequest）。 */
 export interface UpstreamEntryRequest {
   serviceId?: string
   name?: string
@@ -227,6 +227,8 @@ export interface UpstreamEntryRequest {
   cbFailureThreshold?: number
   cbOpenMs?: number
   cbHalfOpenProbes?: number
+  /** 本 REST 服务专属的上行鉴权；不传表示本次不修改。 */
+  authB?: AuthBRequest
 }
 
 export interface ExtraHeader {
@@ -235,7 +237,7 @@ export interface ExtraHeader {
 }
 
 /**
- * 上行授权回显：只有掩码与非敏感字段。
+ * REST 服务鉴权回显：只有掩码与非敏感字段。
  * 后端不会回传任何密钥明文，表单里的密钥留空即表示「不修改」（SEC-01）。
  */
 export interface AuthBView {
@@ -308,7 +310,7 @@ export interface ServerView {
   toolCount: number
   enabledToolCount: number
   listTtlMs: number
-  /** 多上游服务列表（一个 Server 挂多个 REST 服务）。 */
+  /** 多个 REST 服务列表（一个 Server 挂多个 REST 服务）。 */
   upstreams?: UpstreamView[]
   authB?: AuthBView
   authD?: AuthDView
@@ -317,7 +319,7 @@ export interface ServerView {
   updatedAt?: string
   /**
    * 当前账号是否可在本部门树内管理该 Server。
-   * false = 跨部门只读授权（后端已脱敏：endpoint/authB/authD/bindings/上游配置均为空），
+   * false = 跨部门只读授权（后端已脱敏：endpoint/authB/authD/bindings/REST 服务配置均为空），
    * 前端据此渲染只读态，不依赖权限点判断。
    */
   manageable: boolean

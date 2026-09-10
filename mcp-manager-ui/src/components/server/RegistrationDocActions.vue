@@ -10,7 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 /**
  * 单份注册文档的解析管理动作：诊断 / 原文 / 重新解析，以及对应的三个弹出框。
  *
- * 注册与解析是 MCP Server 管理的二级功能：Server 详情页「上游服务」tab 按上游条目挂载本组件，
+ * 注册与解析是 MCP Server 管理的二级功能：Server 详情页「REST 服务」tab 按 REST 服务条目挂载本组件，
  * 全局列表页（/registrations，URL 直达）也复用它，避免两处各养一套一模一样的对话框。
  */
 const props = defineProps<{ registrationId: number; name?: string }>()

@@ -84,7 +84,12 @@ public final class ServerDtos {
             Long deptId) {
     }
 
-    /** EXE-03/04：单个上游服务的配置（按 serviceId upsert）。 */
+    /**
+     * EXE-03/04：单个 REST 服务的配置（按 serviceId upsert）。
+     *
+     * <p>{@code authB} 为空表示「本次不修改该服务的上行鉴权」；非空则一并写入本服务专属的
+     * Auth-B（每个 REST 服务独立，见 {@link AuthBRequest}）。
+     */
     public record UpstreamEntryRequest(
             @Size(max = 64) String serviceId,
             @Size(max = 128) String name,
@@ -96,7 +101,8 @@ public final class ServerDtos {
             List<Integer> retryOnStatus,
             Integer cbFailureThreshold,
             Long cbOpenMs,
-            Integer cbHalfOpenProbes) {
+            Integer cbHalfOpenProbes,
+            AuthBRequest authB) {
     }
 
     /**

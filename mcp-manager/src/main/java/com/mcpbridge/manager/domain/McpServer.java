@@ -55,7 +55,7 @@ public class McpServer extends BaseEntity {
     @Column(length = 2000)
     private String description;
 
-    /** 上游服务版本（来自 info.version）。 */
+    /** REST 服务版本（来自 info.version）。 */
     @Column(length = 32)
     private String version;
 
@@ -83,9 +83,9 @@ public class McpServer extends BaseEntity {
     private String authD;
 
     /**
-     * 上游服务列表（一个 Server 挂多个 REST 服务，按 serviceId 区分）。
-     * 上行鉴权 Auth-B 下沉到 {@link ServerUpstream#getAuthB()} 维度。
-     * Server 级不再持有 upstream 配置。
+     * REST 服务列表（一个 Server 挂多个 REST 服务，按 serviceId 区分）。
+     * 每个 REST 服务的上行鉴权 Auth-B 独立存放在 auth_config 的
+     * {@code (server_id, upstream_service_id)} 维度上，由 AuthConfigService 管理。
      */
     @OneToMany(mappedBy = "serverId", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     private List<ServerUpstream> upstreams = new ArrayList<>();

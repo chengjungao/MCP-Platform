@@ -69,7 +69,7 @@ async function removeServer(row: ServerView): Promise<void> {
     await ElMessageBox.confirm(
       `删除后不可恢复，将一并移除：\n` +
         `· ${row.toolCount} 个 Tool 及覆盖/启用配置\n` +
-        `· 上游服务配置、Auth-B / Auth-D 授权\n` +
+        `· REST 服务配置、Auth-B / Auth-D 授权\n` +
         `· 发布记录与跨部门访问授权\n` +
         `· 生成本 Server 的接口文档存档（注册记录）\n\n` +
         `若该 Server 仍发布在集群上，后端会拒绝删除，请先下线。`,
@@ -141,7 +141,7 @@ onMounted(async () => {
         <h2>MCP Server</h2>
         <p class="subtitle">
           先创建 MCP Server（维护基础信息与 PATH 末段），再在该 Server 下注册多份 Swagger 文档（多 REST 服务）。
-          每份 Swagger 有独立上游与鉴权，tool 自动带服务前缀。
+          每份 Swagger 有独立 REST 服务与鉴权，tool 自动带服务前缀。
         </p>
       </div>
       <div class="toolbar">
@@ -182,7 +182,7 @@ onMounted(async () => {
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="上游服务" width="100" align="center">
+      <el-table-column label="REST 服务" width="100" align="center">
         <template #default="{ row }">
           <span :class="{ muted: !row.upstreams?.length }">{{ row.upstreams?.length ?? 0 }}</span>
         </template>
@@ -237,7 +237,7 @@ onMounted(async () => {
       <el-alert type="info" :closable="false" show-icon class="create-tip">
         <template #title>先建基础信息</template>
         <template #default>
-          创建后得到一个空 Server（无 tool、无上游）。接下来在 Server 详情页的「上游服务」tab 里注册 Swagger 文档，
+          创建后得到一个空 Server（无 tool、无 REST 服务）。接下来在 Server 详情页的「REST 服务」tab 里注册 Swagger 文档，
           每份文档 = 一个 REST 服务的 tool 集合，自动挂到本 Server 下。
         </template>
       </el-alert>

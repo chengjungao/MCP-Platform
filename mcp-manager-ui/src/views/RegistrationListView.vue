@@ -11,7 +11,7 @@ import { formatDateTime, labelOf, REGISTRATION_STATUS_LABEL, shortSha, statusTag
 
 /**
  * 全局注册列表（URL 直达的排查视图，已不在左侧菜单）。
- * 注册与解析是 MCP Server 管理的二级功能：注册入口在各 Server 详情页「上游服务」tab，
+ * 注册与解析是 MCP Server 管理的二级功能：注册入口在各 Server 详情页「REST 服务」tab，
  * 诊断/原文/重新解析也在那里就地弹出。本页只保留跨 Server 的全局视角。
  */
 const router = useRouter()
@@ -52,7 +52,7 @@ onMounted(async () => {
         <h2>注册与解析</h2>
         <p class="subtitle">
           所有已注册文档的全局列表（排查视图）。原始 Swagger 只读留存并记 sha256；改动通过「重新解析 + 覆盖」完成（BR-2）。
-          <strong>注册与日常管理的入口在各 Server 详情页的「上游服务」tab。</strong>
+          <strong>注册与日常管理的入口在各 Server 详情页的「REST 服务」tab。</strong>
         </p>
       </div>
       <div class="toolbar">
@@ -106,7 +106,7 @@ onMounted(async () => {
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="还没有注册过文档。请到某个 MCP Server 详情页的「上游服务」tab 注册" />
+        <el-empty description="还没有注册过文档。请到某个 MCP Server 详情页的「REST 服务」tab 注册" />
       </template>
     </el-table>
 

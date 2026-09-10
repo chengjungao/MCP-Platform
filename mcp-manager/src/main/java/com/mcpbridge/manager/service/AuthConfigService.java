@@ -98,19 +98,78 @@ public class AuthConfigService {
     }
 
     /**
-     * 保存 Server 级上行授权。
+     * 保存 Server 级上行授权（历史形态，保留作兼容；新建配置一律走 REST 服务级）。
      *
      * <p>凭据字段为空/空白表示保持不变；要清除凭据请把 type 改回 NONE。
      */
     @Transactional
     public ServerDtos.AuthBView saveAuthB(McpServer server, ServerDtos.AuthBRequest request) {
-        AuthBSnapshot.Type type = request.type() == null ? AuthBSnapshot.Type.NONE : request.type();
         AuthConfig config = serverLevelConfig(server.getId()).orElseGet(() -> {
             AuthConfig created = new AuthConfig();
             created.setServerId(server.getId());
             created.setToolId(AuthConfig.SERVER_LEVEL);
             return created;
         });
+        persistAuthB(server, config, request, "server", Map.of());
+        return authBView(server);
+    }
+
+    /**
+     * 保存某个 REST 服务专属的上行授权（SVR-03 / BR-4）。
+     *
+     * <p>一个 Server 下的每个 REST 服务各持一份，彼此独立：聚合网关场景里不同下游系统
+     * 往往用不同的鉴权方式，共用一份配置行不通。
+     */
+    @Transactional
+    public ServerDtos.AuthBView saveUpstreamAuthB(McpServer server, String serviceId,
+                                                  ServerDtos.AuthBRequest request) {
+        String normalized = trimToNull(serviceId);
+        if (normalized == null) {
+            throw PlatformException.validation("REST 服务级上行授权必须指定 serviceId",
+                    Map.of("field", "serviceId"));
+        }
+        AuthConfig config = upstreamLevelConfig(server.getId(), normalized).orElseGet(() -> {
+            AuthConfig created = new AuthConfig();
+            created.setServerId(server.getId());
+            created.setToolId(AuthConfig.SERVER_LEVEL);
+            created.setUpstreamServiceId(normalized);
+            return created;
+        });
+        persistAuthB(server, config, request, "server_upstream", Map.of("serviceId", normalized));
+        return upstreamAuthBViews(server.getId()).getOrDefault(normalized, emptyAuthBView());
+    }
+
+    /** 批量回显某 Server 下所有 REST 服务的上行授权，详情页一次性拉取用。 */
+    @Transactional(readOnly = true)
+    public Map<String, ServerDtos.AuthBView> upstreamAuthBViews(Long serverId) {
+        Map<String, ServerDtos.AuthBView> result = new LinkedHashMap<>();
+        for (AuthConfig config : authConfigRepository.findByServerIdAndUpstreamServiceIdIsNotNull(serverId)) {
+            result.put(config.getUpstreamServiceId(), toAuthBView(config));
+        }
+        return result;
+    }
+
+    /**
+     * 删除某个 REST 服务的上行授权配置（随该 REST 服务一起移除，避免留下孤儿记录）。
+     */
+    @Transactional
+    public void deleteUpstreamAuthB(Long serverId, String serviceId) {
+        String normalized = trimToNull(serviceId);
+        if (normalized == null) {
+            return;
+        }
+        authConfigRepository.findByServerIdAndUpstreamServiceId(serverId, normalized)
+                .ifPresent(authConfigRepository::delete);
+    }
+
+    /**
+     * 写入流程：字段装配 → 校验与加密 → 掩码 → 落库 → 审计。
+     *
+     * <p>Server 级与 REST 服务级共用本流程，差别只在 {@code config} 归属哪个维度。
+     */
+    private void persistAuthB(McpServer server, AuthConfig config, ServerDtos.AuthBRequest request,
+                              String targetType, Map<String, Object> extraAudit) {
+        AuthBSnapshot.Type type = request.type() == null ? AuthBSnapshot.Type.NONE : request.type();
 
         config.setType(type);
         config.setInLocation(request.location());
@@ -203,16 +262,33 @@ public class AuthConfigService {
         serverRepository.save(server);
 
         // SEC-02：审计只记类型与掩码，绝不记明文
-        auditService.record(AuditAction.AUTH_B_CHANGE, "server", server.getId(), Map.of(
-                "type", saved.getType().name(),
-                "masked", String.valueOf(saved.getMaskedPreview())));
-        return authBView(server);
+        Map<String, Object> detail = new LinkedHashMap<>(extraAudit);
+        detail.put("type", saved.getType().name());
+        detail.put("masked", String.valueOf(saved.getMaskedPreview()));
+        auditService.record(AuditAction.AUTH_B_CHANGE, targetType, server.getId(), detail);
     }
 
-    /** 解密并组装 Executor 需要的上行授权快照。只允许在内部通道（发布/快照）上调用。 */
+    /** 解密并组装 Executor 需要的上行授权快照（Server 级）。只允许在内部通道（发布/快照）上调用。 */
     @Transactional(readOnly = true)
     public AuthBSnapshot resolveAuthB(McpServer server) {
-        AuthConfig config = serverLevelConfig(server.getId()).orElse(null);
+        return toSnapshot(serverLevelConfig(server.getId()).orElse(null));
+    }
+
+    /**
+     * 解密并组装某个 REST 服务专属的上行授权快照。
+     *
+     * <p>未配置时返回 {@code NONE}，Executor 侧的 {@code effectiveAuthB} 会据此继续回落。
+     */
+    @Transactional(readOnly = true)
+    public AuthBSnapshot resolveUpstreamAuthB(McpServer server, String serviceId) {
+        String normalized = trimToNull(serviceId);
+        if (normalized == null) {
+            return AuthBSnapshot.none();
+        }
+        return toSnapshot(upstreamLevelConfig(server.getId(), normalized).orElse(null));
+    }
+
+    private AuthBSnapshot toSnapshot(AuthConfig config) {
         if (config == null || config.getType() == null || config.getType() == AuthBSnapshot.Type.NONE) {
             return AuthBSnapshot.none();
         }
@@ -338,6 +414,10 @@ public class AuthConfigService {
 
     private java.util.Optional<AuthConfig> serverLevelConfig(Long serverId) {
         return authConfigRepository.findByServerIdAndToolId(serverId, AuthConfig.SERVER_LEVEL);
+    }
+
+    private java.util.Optional<AuthConfig> upstreamLevelConfig(Long serverId, String serviceId) {
+        return authConfigRepository.findByServerIdAndUpstreamServiceId(serverId, serviceId);
     }
 
     private static List<AuthBSnapshot.ExtraHeader> extraHeadersOf(AuthConfig config) {

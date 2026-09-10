@@ -92,7 +92,9 @@ public class PublishService {
         binding.setVersion(version);
         binding.setState(BindingState.PUBLISHED);
         binding.setCurrent(true);
-        binding.setSnapshot(Json.write(snapshot));
+        String snapshotJson = Json.write(snapshot);
+        binding.setSnapshot(snapshotJson);
+        binding.setFingerprint(SnapshotAssembler.fingerprint(snapshotJson, version));
         binding.setPublishedBy(principal.userId());
         binding.setPublishedAt(now);
         PublishBinding saved = bindingRepository.save(binding);
@@ -122,12 +124,12 @@ public class PublishService {
         // 多上游校验：每个 upstream 的 baseUrls 都不能为空
         List<UpstreamSnapshot> upstreams = serverService.upstreamConfigsOf(server);
         if (upstreams.isEmpty()) {
-            problems.put("upstreams", "未配置任何上游服务，Executor 无法转发调用");
+            problems.put("upstreams", "未配置任何 REST 服务，Executor 无法转发调用");
         }
         for (int i = 0; i < upstreams.size(); i++) {
             UpstreamSnapshot u = upstreams.get(i);
             if (u.baseUrls() == null || u.baseUrls().isEmpty()) {
-                problems.put("upstream[" + i + "].baseUrls", "上游服务 baseUrls 为空");
+                problems.put("upstream[" + i + "].baseUrls", "REST 服务 baseUrls 为空");
             }
         }
         long enabledTools = serverService.enabledToolCount(server.getId());
@@ -221,7 +223,9 @@ public class PublishService {
         binding.setState(BindingState.PUBLISHED);
         binding.setCurrent(true);
         // 快照里的 bindingVersion 要指向新版本，否则 etag 与实际生效版本不一致
-        binding.setSnapshot(withBindingVersion(target.getSnapshot(), version, now));
+        String snapshotJson = withBindingVersion(target.getSnapshot(), version, now);
+        binding.setSnapshot(snapshotJson);
+        binding.setFingerprint(SnapshotAssembler.fingerprint(snapshotJson, version));
         binding.setPublishedBy(principal.userId());
         binding.setPublishedAt(now);
         PublishBinding saved = bindingRepository.save(binding);
@@ -253,6 +257,19 @@ public class PublishService {
         ExecutorCluster cluster = clusterService.require(clusterId);
         List<PublishBinding> bindings = bindingRepository.findByClusterIdAndCurrentTrue(clusterId);
         return snapshotAssembler.cluster(cluster, bindings);
+    }
+
+    /**
+     * 集群快照 etag 的轻量复算（EXE-01）。
+     *
+     * <p>{@code /revision} 每 10s 被每个 Executor 打一次，只需要一个字符串。这里刻意只查
+     * {@code fingerprint} 投影列——不 detoast jsonb、不反序列化、不排序对象，
+     * 与 {@link #clusterSnapshot} 算出的 etag 是同一份算法、同一份数据，因此两端口径必然一致。
+     */
+    @Transactional(readOnly = true)
+    public String clusterEtag(ExecutorCluster cluster) {
+        return SnapshotAssembler.etag(cluster.getName(), cluster.getRevision(),
+                bindingRepository.findCurrentFingerprints(cluster.getId(), BindingState.PUBLISHED));
     }
 
     @Transactional(readOnly = true)

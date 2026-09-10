@@ -10,7 +10,7 @@
 ## 1. 一句话架构
 
 **控制面（mcp-manager）把 Swagger 文档编译成版本化的发布快照；数据面（mcp-executor）
-把快照作为唯一配置来源，无状态地对外提供 MCP 2026-07-28 端点并透传到上游 REST。**
+把快照作为唯一配置来源，无状态地对外提供 MCP 2026-07-28 端点并透传到REST 服务。**
 
 两个平面之间只有一条通道：Executor 用节点令牌轮询 Manager 的内部 API 拉快照。
 Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私有集群可以部署在与控制面
@@ -30,14 +30,14 @@ Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私
    2026-07-28               │            │  Auth-B / 负载均衡 / 熔断      │
                             │            └──────┬──────────────┬─────────┘
                             │                   │              │
-                        ┌───┴────┐          上游 REST API    Redis (Redisson)
+                        ┌───┴────┐          REST 服务    Redis (Redisson)
                         │ 审计/  │                          令牌缓存 + 刷新锁
                         │ 快照库 │                          + 失效广播
                         └────────┘
 ```
 
 **数据流向是单向的**：配置从 Manager 流向 Executor，调用流量从 Client 经 Executor 流向
-上游 REST。Executor 从不回写业务配置，只上报节点注册与心跳。
+REST 服务。Executor 从不回写业务配置，只上报节点注册与心跳。
 
 ---
 
@@ -73,7 +73,7 @@ Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私
 | `auth_config` | Auth-B 凭据密文（AES-256-GCM）+ Auth-D 令牌 sha256 集合 |
 | `executor_cluster` | `type`(SHARED/PRIVATE)、`entrypoint`、`path_prefix`、`node_token_hash`、`revision`、授权部门集合 |
 | `executor_node` | 节点注册信息、`status`、最后心跳 |
-| `publish_binding` | `(server, cluster)` 上的 `binding_version` + `snapshot`(jsonb) + `state` + `current` 标记；历史版本永不删除 |
+| `publish_binding` | `(server, cluster)` 上的 `binding_version` + `snapshot`(jsonb) + `fingerprint` + `state` + `current` 标记；历史版本永不删除 |
 | `audit_log` | 30 种动作码 + 目标类型/ID + 结构化 detail + traceId |
 
 **`publish_binding` 是控制面与数据面之间唯一的契约载体。** 发布不是「把 Server 标记为已发布」，
@@ -110,13 +110,14 @@ Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私
 `details` 里逐项写明缺什么：
 
 1. 协议版本必须是 2026-07-28；
-2. 至少一个上游地址；
+2. 至少一个服务地址；
 3. 至少一个启用的 tool；
 4. 生效 tool 名不重复（生效名不是数据库列，只能在这里校验，见 ADR-0002 后果）；
 5. PATH 末段合法（`^[a-z0-9]([a-z0-9-_]{0,62}[a-z0-9])?$`）且未被多个 Server 占用。
 
 通过后：组装 `ServerSnapshot` → 写入新的 `publish_binding`（version+1，旧 binding 的
-`current` 置 false 但**不删除**）→ `cluster.revision++` → 记审计。
+`current` 置 false 但**不删除**，同时固化 `fingerprint = pathSegment:bindingVersion:toolCount`）
+→ `cluster.revision++` → 记审计。
 
 `offline` 只把 binding 状态改掉，Executor 在下一次轮询（≤ 轮询间隔）内移除该端点。
 没有主动推送——数据面无会话、无长连接，推送会引入一条必须保活的状态通道，与无状态目标冲突。
@@ -124,7 +125,7 @@ Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私
 ### 4.3 快照同步（两段式轮询）
 
 ```
-每 10s：GET /internal/v1/clusters/{id}/revision     ← 几十字节，代价近似一次索引查询
+每 10s：GET /internal/v1/clusters/{id}/revision     ← 三个标量，不读 jsonb
    revision/etag 变了？
       是 → GET /internal/v1/clusters/{id}/snapshot   ← 带 If-None-Match
               200 → 原子替换本地快照
@@ -132,10 +133,22 @@ Executor **不直连控制面数据库**（PRD §5.4 明确要求），因此私
       否 → 什么都不做
 ```
 
-etag 由「集群名 + revision + 各 Server 的 `pathSegment:bindingVersion:toolCount`」计算，
+**这两个端点都是「每节点每 10s」的频次，所以它们只回标量。** 心跳只回 `{revision, changed}`，
+`/revision` 只回 `{clusterKey, revision, etag}`。任何「顺带的便利字段」（已发布端点清单、
+serverCount/toolCount）在这里都不是免费的：它们要么触发一次 jsonb 全量装配，要么
+在响应体里增加一份无人消费的负载，最终变成整个集群的固定背景成本税。
+
+etag 由「集群名 + revision + 各绑定固化的 `pathSegment:bindingVersion:toolCount`」计算，
 **不含生成时间**。这一点是 304 语义成立的前提：如果 etag 里掺了时间戳，多 Manager 实例
 或 Manager 重启后每次都会 miss，两段式轮询就退化成每 10 秒拉一次全量——一个 300 接口的
 集群就是每节点每分钟几十 MB 的无谓流量。
+
+指纹之所以单独成列（`publish_binding.fingerprint`，V6）而不是从 `snapshot` 现算，是为了让
+`/revision` 完全不碰 jsonb：读 `snapshot` 会让 PostgreSQL 把整份快照从 TOAST 表里 detoast
+出来，代价与「只想要一个短字符串」不成比例。指纹在发布/回滚写入时固化，
+`SnapshotAssembler.fingerprint` 与 V6 的回填 SQL 必须逐字一致——
+两边一旦分叉，同一份快照会算出两个 etag，304 永远不命中，且**没有任何报错**。
+这条契约由 `SnapshotAssemblerTest` 覆盖。
 
 **失败语义：Manager 不可达时只记 WARN 并保留上一份快照，绝不清空。**
 已发布的端点必须继续可用，最坏情况是新发布的内容延迟生效。启动时若一次都没拉到过快照，
@@ -171,7 +184,7 @@ POST /mcp/{segment}
 | 跳 | 方向 | 模式 | P0 状态 |
 | --- | --- | --- | --- |
 | **Auth-D** | MCP Client → Executor | `NONE` / `STATIC_BEARER` / `OAUTH2` | 前两种已实现；OAUTH2 **显式拒绝**（501 + `-32004` + 提示改用 STATIC_BEARER） |
-| **Auth-B** | Executor → 上游 REST | `NONE` / `API_KEY`(header/query) / `HTTP`(bearer/basic) / `OAUTH2_CLIENT_CREDENTIALS` / `CUSTOM_HEADER` | 五种全部实现 |
+| **Auth-B** | Executor → REST 服务（每个 REST 服务独立配置） | `NONE` / `API_KEY`(header/query) / `HTTP`(bearer/basic) / `OAUTH2_CLIENT_CREDENTIALS` / `CUSTOM_HEADER` | 五种全部实现 |
 
 三条不可让步的安全约束：
 
@@ -211,6 +224,16 @@ Executor 是无状态可丢的（任意节点服务任意请求，网关禁止�
 - **熔断状态。** 熔断度量的是「**本节点**到上游」这条链路的健康度。把它共享出去，会让一个
   节点的网络抖动变成整个集群拒绝调用——本地网络问题被放大成全局故障。因此
   `CircuitBreakerRegistry` 是节点本地的。
+
+**Redis 接入形态可切换。** `mcp.executor.redis.mode` 支持 `single`（单实例 / 主从 / 代理）
+与 `cluster`（Redis Cluster）：前者用 `address`，后者用 `nodes` 列表并由 Redisson 自动发现拓扑
+（`scanInterval=1000ms`）。切换不需要动任何业务代码——共享状态只用 `RBucket` / `RLock` / `RTopic`
+三个**单键**原语，没有跨槽（CROSSSLOT）操作。`database` 只在 single 模式下生效，
+cluster 模式配了非 0 会 WARN 后忽略。
+
+失败语义在这里分了两类，值得单独记住：**「连不上」退化为内存模式，「配错了」直接启动失败。**
+前者是运行时状况（Redis 抖动不该拖死数据面），后者是配置错误——如果 cluster 模式漏配 `nodes` 也
+悄悄降级，运维会以为自己配的是三节点集群，实际每个节点各跑各的内存态，且只在日志里闪一行 WARN。
 
 `withLock` 的 `fallback` 参数**不允许抛异常**：一次上游抖动不该让所有等待者一起失败。
 

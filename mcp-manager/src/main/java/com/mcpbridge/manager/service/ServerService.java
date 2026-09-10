@@ -348,7 +348,7 @@ public class ServerService {
         return value == null ? "" : value;
     }
 
-    /** EXE-03 / EXE-04：按 serviceId upsert 单个上游服务的配置。 */
+    /** EXE-03 / EXE-04：按 serviceId upsert 单个 REST 服务的配置。 */
     @Transactional
     public ServerDtos.ServerView upsertUpstream(Long id, ServerDtos.UpstreamEntryRequest request, AuthPrincipal principal) {
         McpServer server = requireManage(id, principal);
@@ -393,6 +393,11 @@ public class ServerService {
         upstream.setRetryOnStatus(Json.MAPPER.valueToTree(config.retryOnStatus()).toString());
         upstream.setCircuitBreaker(Json.MAPPER.valueToTree(config.circuitBreaker()).toString());
         upstreamRepository.save(upstream);
+
+        // 每个 REST 服务独立的 Auth-B：请求带了就一并写入，空表示本次不改
+        if (request.authB() != null) {
+            authConfigService.saveUpstreamAuthB(server, serviceId, request.authB());
+        }
 
         if (server.getStatus() == ServerStatus.DRAFT) {
             server.setStatus(ServerStatus.CONFIGURED);
@@ -540,26 +545,29 @@ public class ServerService {
                 toolCountOf(binding));
     }
 
-    /** 读取 Server 的所有上游服务视图（多服务支持）；无配置时返回空列表。 */
+    /** 读取 Server 的所有 REST 服务视图（多服务支持）；无配置时返回空列表。 */
     public List<ServerDtos.UpstreamView> upstreamViewsOf(McpServer server) {
+        Map<String, ServerDtos.AuthBView> authBViews = authConfigService.upstreamAuthBViews(server.getId());
         return upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId()).stream()
                 .map(u -> new ServerDtos.UpstreamView(
                         u.getServiceId(),
                         u.getName(),
                         toUpstreamSnapshot(u),
-                        null,  // authB 视图后续按需填充
+                        authBViews.getOrDefault(u.getServiceId(), AuthConfigService.emptyAuthBView()),
                         u.getUpdatedAt()))
                 .toList();
     }
 
-    /** 删除某个上游服务配置（多服务场景下移除一份 Swagger 的上游）。 */
+    /** 删除某个 REST 服务配置（多服务场景下移除一份 Swagger 对应的上游）。 */
     @Transactional
     public ServerDtos.ServerView deleteUpstream(Long id, String serviceId, AuthPrincipal principal) {
         McpServer server = requireManage(id, principal);
         com.mcpbridge.manager.domain.ServerUpstream upstream = upstreamRepository
                 .findByServerIdAndServiceId(server.getId(), serviceId)
-                .orElseThrow(() -> PlatformException.notFound("上游服务 " + serviceId, id));
+                .orElseThrow(() -> PlatformException.notFound("REST 服务 " + serviceId, id));
         upstreamRepository.delete(upstream);
+        // 该 REST 服务专属的 Auth-B 一并移除，避免 auth_config 留下孤儿行
+        authConfigService.deleteUpstreamAuthB(server.getId(), serviceId);
         auditService.record(AuditAction.SERVER_UPDATE, "server", server.getId(), Map.of(
                 "deletedUpstream", serviceId));
         return toViews(List.of(serverRepository.save(server)), principal).get(id);
@@ -572,21 +580,18 @@ public class ServerService {
                 .toList();
     }
 
-    /** 读取 Server 的所有上游 Entry（含 serviceId / name / config / authB），快照装配用。 */
+    /**
+     * 读取 Server 的所有 REST 服务 Entry（含 serviceId / name / config / 本服务专属 Auth-B），
+     * 快照装配用。
+     */
     public List<com.mcpbridge.common.snapshot.UpstreamEntry> upstreamEntriesOf(McpServer server) {
         return upstreamRepository.findByServerIdOrderByServiceIdAsc(server.getId()).stream()
                 .map(u -> com.mcpbridge.common.snapshot.UpstreamEntry.of(
                         u.getServiceId(),
                         u.getName(),
                         toUpstreamSnapshot(u),
-                        readAuthB(u.getAuthB())))
+                        authConfigService.resolveUpstreamAuthB(server, u.getServiceId())))
                 .toList();
-    }
-
-    private com.mcpbridge.common.snapshot.AuthBSnapshot readAuthB(String json) {
-        if (json == null || json.isBlank()) return null;
-        try { return Json.read(json, com.mcpbridge.common.snapshot.AuthBSnapshot.class); }
-        catch (RuntimeException e) { return null; }
     }
 
     private UpstreamSnapshot toUpstreamSnapshot(com.mcpbridge.manager.domain.ServerUpstream u) {

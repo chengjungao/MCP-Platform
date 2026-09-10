@@ -119,7 +119,7 @@ hasRead(server, principal) =
 | `api/types.ts` / `api/access.ts`（新增） | CatalogRow / RequestView / 类型与方法；`ServerView.manageable` |
 | `views/AccessView.vue`（新增） | 三 tab：申请目录（卡片/表格 + 申请按钮 + 理由对话框）/ 我发起的（状态 + 审批意见 + 获批后「打开 Server」）/ 待我审批（审批/驳回 + 意见，仅审批人可见） |
 | `views/ServerDetailView.vue` | `server.manageable === false` 时渲染**只读精简视图**（基本信息 + Tool 列表），隐藏全部写面板与 Auth 凭据 tab |
-| `components/server/ServerReadonlyPanel.vue`（新增） | 只读视图（描述 / PATH / 状态 / 上游服务名列表 / Tool 名列表），`serverApi.tools` 数据源 |
+| `components/server/ServerReadonlyPanel.vue`（新增） | 只读视图（描述 / PATH / 状态 / REST 服务名列表 / Tool 名列表），`serverApi.tools` 数据源 |
 
 ## 验证
 

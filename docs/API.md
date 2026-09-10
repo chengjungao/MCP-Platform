@@ -283,17 +283,21 @@ audit:read metrics:read
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
 | POST | `/internal/v1/nodes/register` | `{nodeKey, clusterName, host, port, version, protocolVersion}` | `{nodeId, clusterId, clusterName, endpointTemplate, snapshotRevision, heartbeatIntervalSeconds, protocolVersion}` |
-| POST | `/internal/v1/nodes/heartbeat` | `{nodeKey, snapshotRevision, loadInfo}` | `{revision, changed, publishedPathSegments}` |
-| GET | `/internal/v1/clusters/{clusterId}/revision` | — | `{clusterKey, revision, etag, serverCount, toolCount}` |
+| POST | `/internal/v1/nodes/heartbeat` | `{nodeKey, snapshotRevision, loadInfo}` | `{revision, changed}` |
+| GET | `/internal/v1/clusters/{clusterId}/revision` | — | `{clusterKey, revision, etag}` |
 | GET | `/internal/v1/clusters/{clusterId}/snapshot` | 可带 `If-None-Match` | 200 + `PublishedSnapshot` + `ETag` + `X-Mcp-Revision`；或 **304 无体** |
 
 注册时 `protocolVersion` 必须是 `2026-07-28`，否则直接拒绝（决策 D1）。
 节点未注册就发心跳会得到 409 `INVALID_STATE`，message 里给出注册端点。
 
 `heartbeat.changed=true` 表示本节点快照落后，Executor 应**立即**触发一次拉取而不是等下个周期。
-`publishedPathSegments` 用于节点自检「我该服务的端点齐不齐」。
 
-`etag` 只由「集群名 + revision + 各 Server 的 `pathSegment:bindingVersion:toolCount`」决定，
+心跳与 `/revision` 都是 10s 级高频调用，因此响应**刻意只回标量**：心跳不回已发布端点清单，
+`/revision` 不回 serverCount/toolCount，`/revision` 也不读 `publish_binding.snapshot`
+（etag 由 `fingerprint` 投影列算出）。任何「顺带的便利字段」在这两个端点上都会变成
+每节点每 10s 一次的固定装配成本。
+
+`etag` 只由「集群名 + revision + 各绑定固化的 `pathSegment:bindingVersion:toolCount`」决定，
 **不含生成时间**，因此多 Manager 实例与重启后都能给出一致结果，304 语义才成立。
 
 ---

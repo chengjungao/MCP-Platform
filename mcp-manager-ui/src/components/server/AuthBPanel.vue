@@ -1,4 +1,11 @@
 <script setup lang="ts">
+/**
+ * Server 级上行鉴权（Auth-B）面板。
+ *
+ * 当前未挂载：Auth-B 的配置入口已下沉到「REST 服务」tab（每个 REST 服务各配一份），
+ * ServerDetailView 不再引用本组件。保留它是为了 Server 级 API
+ * （`PUT /servers/{id}/auth-b`）仍有一份可参照的 UI 实现，需要恢复 Server 级入口时可直接挂回。
+ */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
@@ -135,7 +142,7 @@ async function submit(): Promise<void> {
     form.secret = ''
     form.password = ''
     form.clientSecret = ''
-    ElMessage.success('上行授权已保存，重新发布后 Executor 才会用新凭据')
+    ElMessage.success('REST 服务鉴权已保存，重新发布后 Executor 才会用新凭据')
     emit('changed')
   } catch (error) {
     notifyError(error)
@@ -172,7 +179,7 @@ onMounted(() => {
           />
         </el-select>
         <div class="hint muted">
-          这是「平台 → 部门上游服务」这一跳（Auth-B）。它与客户端访问平台用的 Auth-D 完全独立。
+          这是「平台 → 部门 REST 服务」这一跳（Auth-B）。它与客户端访问平台用的 Auth-D 完全独立。
         </div>
       </el-form-item>
 
@@ -296,7 +303,7 @@ onMounted(() => {
       </template>
 
       <el-form-item>
-        <el-button type="primary" :loading="saving" :disabled="!canWrite" @click="submit">保存上行授权</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!canWrite" @click="submit">保存REST 服务鉴权</el-button>
         <el-button :disabled="!canWrite" @click="load">重置</el-button>
         <span v-if="!canWrite" class="muted hint">当前账号没有 auth:write 权限，只能查看掩码与非敏感字段</span>
       </el-form-item>

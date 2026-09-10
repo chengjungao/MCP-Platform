@@ -35,10 +35,17 @@ mcp:
       port: ${EXECUTOR_PORT:9090}
       version: 0.1.0
     redis:
-      # false 或连不上时退化为单节点内存模式：功能可用，但各节点独立换取上游令牌（BR-6）
+      # false 或连不上时退化为单节点内存模式：功能可用，但各节点独立换取上游令牌（BR-6）。
+      # 注意：这里只兜「连不上」；配错了（如 cluster 模式没给 nodes）会直接启动失败
       enabled: ${EXECUTOR_REDIS_ENABLED:true}
+      # 接入形态：single=单实例/主从/代理，cluster=Redis Cluster
+      mode: ${EXECUTOR_REDIS_MODE:single}
+      # single 模式的地址；省略协议前缀会自动补 redis://
       address: ${EXECUTOR_REDIS_ADDRESS:redis://localhost:6379}
+      # cluster 模式的节点地址，逗号分隔。cluster 模式下 address 不生效
+      nodes: ${EXECUTOR_REDIS_NODES:}
       password: ${EXECUTOR_REDIS_PASSWORD:}
+      # 仅 single 模式生效；Redis Cluster 只有 db0，配了非 0 会被忽略并打 WARN
       database: ${EXECUTOR_REDIS_DATABASE:0}
       key-prefix: mcp
       # OAuth2 上行令牌缓存时长；实际 TTL 取 min(上游 expires_in - 60s, 本值)
@@ -78,4 +85,10 @@ logging:
     reactor.netty.http.client: WARN
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+  charset:
+    # 必须显式指定：Windows 中文环境下 Spring Boot 会把 System.console().charset()（=GBK）
+    # 取作 CONSOLE_LOG_CHARSET，而 JDK 18+ 的 file.encoding 已是 UTF-8。两边不一致时，
+    # 日志按 GBK 编码写出、终端按 UTF-8 解码，中文即乱码（表现为「�ڵ���ע��」）。
+    console: UTF-8
+    file: UTF-8
 # SEC-02：所有可能含凭据的文本一律经 LogSanitizer 处理后才入日志

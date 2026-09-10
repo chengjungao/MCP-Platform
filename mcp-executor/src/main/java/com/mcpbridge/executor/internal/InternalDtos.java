@@ -1,6 +1,5 @@
 package com.mcpbridge.executor.internal;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -45,13 +44,15 @@ public final class InternalDtos {
     }
 
     /**
-     * @param changed               本节点快照是否落后；true 时应立即触发一次拉取而不是等下个周期
-     * @param publishedPathSegments 当前集群已发布的 PATH 末段，用于节点自检「我该服务的端点齐不齐」
+     * 心跳响应。只有两个标量——心跳是 10s 级高频调用，响应里多一个「顺带的便利字段」，
+     * 就是 Manager 侧每 10s 一次的固定装配成本（EXE-01）。
+     *
+     * @param changed 本节点快照是否落后；true 时应立即触发一次拉取而不是等下个周期
      */
-    public record HeartbeatResponse(long revision, boolean changed, List<String> publishedPathSegments) {
+    public record HeartbeatResponse(long revision, boolean changed) {
     }
 
-    /** 轻量轮询结果：只回版本与 etag，不回快照体。 */
-    public record RevisionView(String clusterKey, long revision, String etag, int serverCount, int toolCount) {
+    /** 轻量轮询结果：只回版本与 etag 两个标量，不回快照体，也不做任何 jsonb 装配。 */
+    public record RevisionView(String clusterKey, long revision, String etag) {
     }
 }

@@ -32,7 +32,7 @@
 数据面  mcp-executor  协议守卫 / Auth-D / 参数映射 / Auth-B / 负载均衡 / 熔断
                           │
                           ▼
-                      上游 REST API
+                      REST 服务
 ```
 
 两个平面之间只有一条通道，Executor **不直连控制面数据库**，因此私有集群可以部署在
@@ -138,7 +138,7 @@ HTTP 镜像被 Maven 3.9 的 `maven-default-http-blocker` 拦截。
 本仓库是 **P0 可运行骨架**：可编译、可启动、可测试，治理链路端到端打通。
 
 已实现：注册解析（上传 / URL / 粘贴 / 重新解析 + diff）、base ⊕ overlay 覆盖与挂起区、
-Server/Tool 精修、上游策略与负载均衡、Auth-B 五种上行鉴权（凭据 AES-256-GCM 加密托管）、
+Server/Tool 精修、上游策略与负载均衡、Auth-B 五种鉴权（按 REST 服务独立配置，凭据 AES-256-GCM 加密托管）、
 Auth-D 的 NONE 与 STATIC_BEARER、集群与节点管理、发布 / 下线 / 回滚、快照两段式同步、
 MCP 2026-07-28 端点（`server/discover` / `tools/list` / `tools/call` / `ping`）、
 Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离、审计、Vue3 控制台。

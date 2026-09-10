@@ -32,7 +32,7 @@ const routes: RouteRecordRaw[] = [
       },
       {
         // 不进左侧菜单：注册与解析是 MCP Server 管理的二级功能，
-        // 入口在 Server 详情页「上游服务」tab；此路由保留为 URL 直达的全局排查视图
+        // 入口在 Server 详情页「REST 服务」tab；此路由保留为 URL 直达的全局排查视图
         path: 'registrations',
         name: 'registrations',
         component: () => import('@/views/RegistrationListView.vue'),

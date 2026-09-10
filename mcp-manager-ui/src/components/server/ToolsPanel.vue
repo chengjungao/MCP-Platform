@@ -262,7 +262,7 @@ onMounted(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="上游操作" min-width="220">
+      <el-table-column label="REST 操作" min-width="220">
         <template #default="{ row }">
           <el-tag size="small" effect="plain">{{ row.method }}</el-tag>
           <span class="mono small path">{{ row.path }}</span>

@@ -9,7 +9,7 @@ import { formatDateTime, labelOf, SERVER_STATUS_LABEL, statusTag } from '@/utils
 
 /**
  * 跨部门只读详情：授权部门成员查看外部门 Server 的最小视图。
- * 数据已由后端脱敏（无端点 / 凭据 / 上游地址），本组件只渲染基本信息 + Tool 列表，无任何写操作。
+ * 数据已由后端脱敏（无端点 / 凭据 / 服务地址），本组件只渲染基本信息 + Tool 列表，无任何写操作。
  */
 const props = defineProps<{ serverId: number; server: ServerView }>()
 
@@ -60,7 +60,7 @@ onMounted(() => {
         <el-descriptions-item label="Tool">
           {{ server.enabledToolCount }}/{{ server.toolCount }} 启用
         </el-descriptions-item>
-        <el-descriptions-item label="上游服务">
+        <el-descriptions-item label="REST 服务">
           <template v-if="server.upstreams?.length">
             {{ server.upstreams.map((u) => u.name || u.serviceId).join('、') }}
           </template>

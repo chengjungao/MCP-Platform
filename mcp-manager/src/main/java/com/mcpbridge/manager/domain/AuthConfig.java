@@ -6,7 +6,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -17,11 +16,18 @@ import org.hibernate.type.SqlTypes;
  * 非敏感字段（tokenUrl / clientId / scope / header 名）保持明文以便排障；
  * 任何查询接口都只返回 {@code maskedPreview}，绝不回明文。
  *
- * <p>{@code toolId = 0} 表示 Server 级默认配置；非 0 表示 tool 级覆盖（BR-4，P1）。
+ * <p>配置有三个维度，由 {@code toolId} 与 {@code upstreamServiceId} 共同决定：
+ * <ul>
+ *   <li><b>REST 服务级</b>（主用）：{@code toolId = 0} 且 {@code upstreamServiceId} 非空。
+ *       每个 REST 服务一份，彼此独立——这是「一个 Server 挂多个 REST 服务、各自对接不同下游系统」的
+ *       前提条件。</li>
+ *   <li><b>Tool 级覆盖</b>（BR-4，P1）：{@code toolId} 非 0，{@code upstreamServiceId} 为空。</li>
+ *   <li><b>Server 级</b>：{@code toolId = 0} 且 {@code upstreamServiceId} 为空。
+ *       历史形态，保留作兼容；新建配置一律走 REST 服务级。</li>
+ * </ul>
  */
 @Entity
-@Table(name = "auth_config",
-        uniqueConstraints = @UniqueConstraint(name = "uk_auth_config_server_tool", columnNames = {"server_id", "tool_id"}))
+@Table(name = "auth_config")
 public class AuthConfig extends BaseEntity {
 
     /** Server 级配置的 toolId 取值。 */
@@ -32,6 +38,10 @@ public class AuthConfig extends BaseEntity {
 
     @Column(name = "tool_id", nullable = false)
     private long toolId = SERVER_LEVEL;
+
+    /** REST 服务级配置所属的 {@code serviceId}；为空表示 Server 级或 Tool 级。 */
+    @Column(name = "upstream_service_id", length = 64)
+    private String upstreamServiceId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
@@ -90,6 +100,8 @@ public class AuthConfig extends BaseEntity {
     public void setServerId(Long serverId) { this.serverId = serverId; }
     public long getToolId() { return toolId; }
     public void setToolId(long toolId) { this.toolId = toolId; }
+    public String getUpstreamServiceId() { return upstreamServiceId; }
+    public void setUpstreamServiceId(String upstreamServiceId) { this.upstreamServiceId = upstreamServiceId; }
     public AuthBSnapshot.Type getType() { return type; }
     public void setType(AuthBSnapshot.Type type) { this.type = type; }
     public AuthBSnapshot.Location getInLocation() { return inLocation; }

@@ -44,7 +44,7 @@ const menu: MenuItem[] = [
   { path: '/audits', title: '审计日志', icon: Tickets, permission: 'audit:read' }
 ]
 // 注册与解析不再作为一级菜单：它是 MCP Server 管理的二级功能，
-// 注册入口在 Server 详情页「上游服务」tab，诊断/原文/重新解析也在那里弹出管理。
+// 注册入口在 Server 详情页「REST 服务」tab，诊断/原文/重新解析也在那里弹出管理。
 // /registrations 路由保留（URL 直达可作为全局排查视图），只是不进菜单。
 
 const route = useRoute()

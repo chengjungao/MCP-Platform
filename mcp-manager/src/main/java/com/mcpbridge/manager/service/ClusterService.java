@@ -11,7 +11,6 @@ import com.mcpbridge.manager.domain.ClusterType;
 import com.mcpbridge.manager.domain.ExecutorCluster;
 import com.mcpbridge.manager.domain.ExecutorNode;
 import com.mcpbridge.manager.domain.NodeStatus;
-import com.mcpbridge.manager.domain.PublishBinding;
 import com.mcpbridge.manager.repository.ExecutorClusterRepository;
 import com.mcpbridge.manager.repository.ExecutorNodeRepository;
 import com.mcpbridge.manager.repository.PublishBindingRepository;
@@ -284,8 +283,9 @@ public class ClusterService {
     }
 
     private ClusterDtos.ClusterView toView(ExecutorCluster cluster) {
-        List<PublishBinding> current = bindingRepository.findByClusterIdAndCurrentTrue(cluster.getId());
-        long published = current.stream().filter(b -> b.getState() == BindingState.PUBLISHED).count();
+        // 集群列表页只需要一个「已发布数」，用 count 查询而不是把整行（含 jsonb snapshot）拉回来
+        long published = bindingRepository.countByClusterIdAndCurrentTrueAndState(
+                cluster.getId(), BindingState.PUBLISHED);
         return new ClusterDtos.ClusterView(
                 cluster.getId(),
                 cluster.getName(),
