@@ -8,6 +8,7 @@ import com.mcpbridge.common.snapshot.UpstreamSnapshot;
 import com.mcpbridge.executor.auth.UpstreamCredentials;
 import com.mcpbridge.executor.config.ExecutorProperties;
 import com.mcpbridge.executor.mcp.McpErrorException;
+import com.mcpbridge.executor.testkit.TestMetrics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
@@ -33,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class UpstreamInvokerTest {
 
     private final CircuitBreakerRegistry breakers = new CircuitBreakerRegistry();
-    private final UpstreamInvoker invoker = new UpstreamInvoker(properties(), breakers);
+    private final UpstreamInvoker invoker = new UpstreamInvoker(properties(), breakers, TestMetrics.create(breakers));
 
     // ------------------------------------------------------------------ 选址
 
@@ -173,7 +174,7 @@ class UpstreamInvokerTest {
     void rejectsWhenNoBaseUrlConfigured() {
         ServerSnapshot server = server(40L, UpstreamSnapshot.defaults(List.of()));
 
-        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty()))
+        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty(), null))
                 .expectErrorSatisfies(t -> {
                     McpErrorException e = expectMcp(t);
                     assertThat(e.httpStatus()).isEqualTo(502);
@@ -188,7 +189,7 @@ class UpstreamInvokerTest {
     void rejectsWhenAllBaseUrlsBlank() {
         ServerSnapshot server = server(41L, UpstreamSnapshot.defaults(List.of("  ", "")));
 
-        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty()))
+        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty(), null))
                 .expectErrorSatisfies(t -> assertThat(expectMcp(t).error().code())
                         .isEqualTo(JsonRpcErrorCodes.UPSTREAM_ERROR))
                 .verify(Duration.ofSeconds(5));
@@ -205,7 +206,7 @@ class UpstreamInvokerTest {
 
         assertThat(breakers.states()).containsEntry("42:default", CircuitBreakerRegistry.State.OPEN);
 
-        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty()))
+        StepVerifier.create(invoker.invoke(server, tool("getOrder"), request("/orders"), UpstreamCredentials.empty(), null))
                 .expectErrorSatisfies(t -> {
                     McpErrorException e = expectMcp(t);
                     assertThat(e.error().code()).isEqualTo(JsonRpcErrorCodes.UPSTREAM_ERROR);

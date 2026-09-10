@@ -253,6 +253,13 @@ function overriddenCount(diff: { fields: { overridden: boolean }[] }): number {
   return diff.fields.filter((field) => field.overridden).length
 }
 
+/** Prompt 参数摘要：必填带 `*`。快照里 `arguments` 可能缺省，兜住 undefined。 */
+function argumentSummary(prompt: { arguments?: { name: string; required: boolean }[] }): string {
+  const args = prompt.arguments ?? []
+  if (args.length === 0) return '—'
+  return args.map((arg) => (arg.required ? `${arg.name}*` : arg.name)).join('、')
+}
+
 onMounted(() => {
   void load()
 })
@@ -324,6 +331,53 @@ onMounted(() => {
         </el-table>
         <p class="muted hint">
           这里只包含启用状态的 tool。流式 tool 即使在列表里，Executor 也不会把它放进 tools/list。
+        </p>
+
+        <h4>Resource（{{ effectiveModel.resources?.length ?? 0 }}）</h4>
+        <el-table :data="effectiveModel.resources" border size="small" class="inner">
+          <el-table-column label="URI" min-width="220">
+            <template #default="{ row }"><span class="mono">{{ row.uri }}</span></template>
+          </el-table-column>
+          <el-table-column label="数据来源" min-width="200">
+            <template #default="{ row }">
+              <template v-if="row.toolName">
+                <el-tag size="small" effect="plain" type="warning">映射 tool</el-tag>
+                <span class="mono small path">{{ row.toolName }}</span>
+              </template>
+              <template v-else>
+                <el-tag size="small" effect="plain" type="info">静态内容</el-tag>
+                <span class="muted small path">{{ (row.content ?? '').length }} 字符</span>
+              </template>
+            </template>
+          </el-table-column>
+          <el-table-column label="mimeType" width="150">
+            <template #default="{ row }">
+              <span class="mono small">{{ row.mimeType || 'text/plain' }}</span>
+            </template>
+          </el-table-column>
+          <template #empty><el-empty description="快照里没有 Resource" :image-size="60" /></template>
+        </el-table>
+        <p class="muted hint">
+          映射的 tool 若被停用或删除，对应 Resource 会被发布流程<b>跳过</b>（不阻断发布）——
+          对着这张表确认一次，比发完再被客户端问「资源怎么没了」强。
+        </p>
+
+        <h4>Prompt（{{ effectiveModel.prompts?.length ?? 0 }}）</h4>
+        <el-table :data="effectiveModel.prompts" border size="small" class="inner">
+          <el-table-column label="Prompt 名" min-width="180">
+            <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
+          </el-table-column>
+          <el-table-column label="参数（* = 必填）" min-width="220">
+            <template #default="{ row }"><span class="mono small">{{ argumentSummary(row) }}</span></template>
+          </el-table-column>
+          <el-table-column label="描述" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.description || '—' }}</template>
+          </el-table-column>
+          <template #empty><el-empty description="快照里没有 Prompt" :image-size="60" /></template>
+        </el-table>
+        <p class="muted hint">
+          快照里存的是<b>模板原文</b>（含 <span class="mono">占位符</span>），参数由客户端在
+          <span class="mono">prompts/get</span> 时传入、Executor 侧渲染。
         </p>
       </template>
       <el-empty v-else description="拿不到生效模型" :image-size="60" />
@@ -672,5 +726,9 @@ onMounted(() => {
 .hint {
   font-size: 12px;
   line-height: 1.6;
+}
+
+.small {
+  font-size: 12px;
 }
 </style>

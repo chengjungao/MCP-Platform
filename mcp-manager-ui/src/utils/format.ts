@@ -141,9 +141,12 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   'registration.parse_failed': '解析失败',
   'server.update': '修改 Server',
   'server.path_change': '修改 PATH 末段',
+  'server.delete': '删除 Server',
   'tool.overlay_update': '修改 Tool 覆盖',
   'tool.overlay_reset': '恢复 Tool 默认',
   'tool.toggle': '启用/停用 Tool',
+  'catalog.resource_change': '变更 Resource',
+  'catalog.prompt_change': '变更 Prompt',
   'authb.change': '变更REST 服务鉴权',
   'authd.change': '变更MCP 客户端授权',
   'cluster.create': '新建集群',
@@ -153,7 +156,12 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   'publish.offline': '下线',
   'publish.rollback': '回滚',
   'node.register': '节点注册',
-  'node.offline': '节点下线'
+  'node.offline': '节点下线',
+  'access.apply': '提交跨部门申请',
+  'access.approve': '批准跨部门申请',
+  'access.reject': '驳回跨部门申请',
+  'access.revoke': '回收跨部门授权',
+  'audit.export': '导出审计'
 }
 
 /** 审计页的动作用于下拉选项，顺序与上表一致。 */

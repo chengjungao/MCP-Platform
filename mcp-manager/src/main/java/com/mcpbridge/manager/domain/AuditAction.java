@@ -32,6 +32,10 @@ public final class AuditAction {
     public static final String TOOL_OVERLAY_RESET = "tool.overlay_reset";
     public static final String TOOL_TOGGLE = "tool.toggle";
 
+    /** Resource / Prompt 手动目录变更（SVR-05/06）。 */
+    public static final String RESOURCE_CHANGE = "catalog.resource_change";
+    public static final String PROMPT_CHANGE = "catalog.prompt_change";
+
     /** 密钥变更：detail 只记类型与掩码，绝不记明文（SEC-01/SEC-02）。 */
     public static final String AUTH_B_CHANGE = "authb.change";
     public static final String AUTH_D_CHANGE = "authd.change";
@@ -52,6 +56,14 @@ public final class AuditAction {
     public static final String ACCESS_APPROVE = "access.approve";
     public static final String ACCESS_REJECT = "access.reject";
     public static final String ACCESS_REVOKE = "access.revoke";
+
+    /**
+     * 审计导出（MGM-05）。
+     *
+     * <p>读审计本身也是敏感动作：把全量操作记录导出成文件，等于把"谁在什么时候做了什么"
+     * 一次性带走。必须留痕，否则导出会成为审计体系里唯一的盲区。
+     */
+    public static final String AUDIT_EXPORT = "audit.export";
 
     private AuditAction() {
     }

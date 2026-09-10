@@ -3,6 +3,7 @@ package com.mcpbridge.manager.web;
 import com.mcpbridge.manager.domain.McpServer;
 import com.mcpbridge.manager.security.AuthPrincipal;
 import com.mcpbridge.manager.service.AuthConfigService;
+import com.mcpbridge.manager.service.ResourcePromptService;
 import com.mcpbridge.manager.service.ServerService;
 import com.mcpbridge.manager.web.dto.ApiResponse;
 import com.mcpbridge.manager.web.dto.PageView;
@@ -40,10 +41,14 @@ public class ServerController {
 
     private final ServerService serverService;
     private final AuthConfigService authConfigService;
+    private final ResourcePromptService resourcePromptService;
 
-    public ServerController(ServerService serverService, AuthConfigService authConfigService) {
+    public ServerController(ServerService serverService,
+                            AuthConfigService authConfigService,
+                            ResourcePromptService resourcePromptService) {
         this.serverService = serverService;
         this.authConfigService = authConfigService;
+        this.resourcePromptService = resourcePromptService;
     }
 
     @GetMapping
@@ -99,6 +104,7 @@ public class ServerController {
                 request.name(),
                 request.baseUrls(),
                 request.lbStrategy(),
+                request.weights(),
                 request.connectTimeoutMs(),
                 request.readTimeoutMs(),
                 request.retries(),
@@ -189,5 +195,85 @@ public class ServerController {
     public ApiResponse<List<PublishDtos.BindingView>> bindings(@PathVariable Long id,
                                                                @AuthenticationPrincipal AuthPrincipal principal) {
         return ApiResponse.ok(serverService.bindings(id, principal));
+    }
+
+    // ---------------------------------------------------------------- Resource（SVR-05）
+
+    @GetMapping("/{id}/resources")
+    @PreAuthorize("hasAuthority('server:read')")
+    public ApiResponse<List<ServerDtos.ResourceView>> resources(@PathVariable Long id,
+                                                                @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.resources(id, principal));
+    }
+
+    /** 新增 Resource。URI 在 Server 内唯一。 */
+    @PostMapping("/{id}/resources")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<ServerDtos.ResourceView> createResource(
+            @PathVariable Long id,
+            @Valid @RequestBody ServerDtos.ResourceRequest request,
+            @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.saveResource(id, null, request, principal),
+                "已保存，需重新发布后对 MCP Client 生效");
+    }
+
+    @PutMapping("/{id}/resources/{resourceId}")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<ServerDtos.ResourceView> updateResource(
+            @PathVariable Long id,
+            @PathVariable Long resourceId,
+            @Valid @RequestBody ServerDtos.ResourceRequest request,
+            @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.saveResource(id, resourceId, request, principal),
+                "已保存，需重新发布后对 MCP Client 生效");
+    }
+
+    @DeleteMapping("/{id}/resources/{resourceId}")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<Void> deleteResource(@PathVariable Long id,
+                                            @PathVariable Long resourceId,
+                                            @AuthenticationPrincipal AuthPrincipal principal) {
+        resourcePromptService.deleteResource(id, resourceId, principal);
+        return ApiResponse.ok(null, "已删除，需重新发布后对 MCP Client 生效");
+    }
+
+    // ---------------------------------------------------------------- Prompt（SVR-06）
+
+    @GetMapping("/{id}/prompts")
+    @PreAuthorize("hasAuthority('server:read')")
+    public ApiResponse<List<ServerDtos.PromptView>> prompts(@PathVariable Long id,
+                                                            @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.prompts(id, principal));
+    }
+
+    /** 新增 Prompt。模板占位符必须与参数声明一致，否则直接拒绝。 */
+    @PostMapping("/{id}/prompts")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<ServerDtos.PromptView> createPrompt(
+            @PathVariable Long id,
+            @Valid @RequestBody ServerDtos.PromptRequest request,
+            @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.savePrompt(id, null, request, principal),
+                "已保存，需重新发布后对 MCP Client 生效");
+    }
+
+    @PutMapping("/{id}/prompts/{promptId}")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<ServerDtos.PromptView> updatePrompt(
+            @PathVariable Long id,
+            @PathVariable Long promptId,
+            @Valid @RequestBody ServerDtos.PromptRequest request,
+            @AuthenticationPrincipal AuthPrincipal principal) {
+        return ApiResponse.ok(resourcePromptService.savePrompt(id, promptId, request, principal),
+                "已保存，需重新发布后对 MCP Client 生效");
+    }
+
+    @DeleteMapping("/{id}/prompts/{promptId}")
+    @PreAuthorize("hasAuthority('tool:write')")
+    public ApiResponse<Void> deletePrompt(@PathVariable Long id,
+                                          @PathVariable Long promptId,
+                                          @AuthenticationPrincipal AuthPrincipal principal) {
+        resourcePromptService.deletePrompt(id, promptId, principal);
+        return ApiResponse.ok(null, "已删除，需重新发布后对 MCP Client 生效");
     }
 }

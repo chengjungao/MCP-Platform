@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SnapshotAssemblerTest {
 
     /** cluster() 只用到 cluster 的 name/revision，依赖的服务传 null 即可。 */
-    private final SnapshotAssembler assembler = new SnapshotAssembler(null, null, null);
+    private final SnapshotAssembler assembler = new SnapshotAssembler(null, null, null, null);
 
     @Test
     @DisplayName("指纹形状与 V6 回填 SQL 一致：pathSegment:version:toolCount")

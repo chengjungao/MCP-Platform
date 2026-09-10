@@ -136,8 +136,7 @@ export async function rawText(url: string): Promise<string> {
 }
 
 /** 上传 multipart。progress 供大文档上传时给用户反馈。 */
-export function upload<T>(
-  url: string,
+export function upload<T>(  url: string,
   form: FormData,
   onProgress?: (percent: number) => void
 ): Promise<T> {
@@ -153,6 +152,81 @@ export function upload<T>(
       }
     }
   })
+}
+
+/**
+ * 触发一次文件下载（例如审计 CSV 导出）。
+ *
+ * 为什么不能直接 `<a href="/api/v1/audits/export">`：需要带 Authorization 头，浏览器原生跳转带不上。
+ * 所以走 axios 取 blob，再在前端造一个临时链接点一下。
+ *
+ * 这里不经过 `api()` 拆信封，因此要自己处理失败路径：出错的响应体是 **Blob**，
+ * 拿不到 `message`，不还原的话用户只会看到一句「请求失败（HTTP 409）」，而真正的原因
+ * （例如「导出条数超过上限，请缩小筛选范围」）就丢了。
+ */
+export async function downloadCsv(
+  url: string,
+  params?: Record<string, unknown>,
+  fallbackName = 'export.csv'
+): Promise<void> {
+  const response = await http
+    .request<Blob>({ method: 'GET', url, params, responseType: 'blob' })
+    .catch(async (error: AxiosError<unknown>) => {
+      throw await toApiError(error)
+    })
+
+  const blob = response.data
+  if (blob.type.includes('json')) {
+    // 后端明确回了 JSON：说明不是文件，而是一条错误信封（200 但 content-type 是 json 的情况）
+    const text = await blob.text()
+    const body = parseEnvelope(text)
+    throw new ApiError(body?.code ?? 'EXPORT_FAILED', body?.message ?? '导出失败', response.status, body?.details ?? null)
+  }
+
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filenameOf(response.headers['content-disposition']) ?? fallbackName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // 必须显式回收：blob URL 会一直占着内存直到页面卸载
+  URL.revokeObjectURL(objectUrl)
+}
+
+/** 把 blob 形态的错误响应还原成正常的 ApiError，保住后端的 message 与 details。 */
+async function toApiError(error: AxiosError<unknown>): Promise<ApiError> {
+  const status = error.response?.status ?? 0
+  const data = error.response?.data
+  if (data instanceof Blob && data.type.includes('json')) {
+    const body = parseEnvelope(await data.text())
+    if (body) {
+      return new ApiError(body.code ?? `HTTP_${status}`, body.message ?? '导出失败', status, body.details ?? null)
+    }
+  }
+  const body = data as ApiEnvelope<unknown> | undefined
+  return new ApiError(
+    body?.code ?? (status === 0 ? 'NETWORK_ERROR' : `HTTP_${status}`),
+    body?.message ?? describeTransport(error, status),
+    status,
+    body?.details ?? null
+  )
+}
+
+function parseEnvelope(text: string): ApiEnvelope<unknown> | null {
+  try {
+    const parsed = JSON.parse(text) as ApiEnvelope<unknown>
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** 从 `attachment; filename="audit-20260910-1530Z.csv"` 里取文件名。 */
+function filenameOf(disposition?: string): string | null {
+  if (!disposition) return null
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
+  return match ? decodeURIComponent(match[1]) : null
 }
 
 /**

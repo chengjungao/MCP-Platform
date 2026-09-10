@@ -70,7 +70,8 @@ public class AuthConfigService {
             return Map.of();
         }
         Map<Long, ServerDtos.AuthBView> result = new LinkedHashMap<>();
-        for (AuthConfig config : authConfigRepository.findByServerIdInAndToolId(serverIds, AuthConfig.SERVER_LEVEL)) {
+        for (AuthConfig config : authConfigRepository
+                .findByServerIdInAndToolIdAndUpstreamServiceIdIsNull(serverIds, AuthConfig.SERVER_LEVEL)) {
             result.put(config.getServerId(), toAuthBView(config));
         }
         return result;
@@ -160,6 +161,73 @@ public class AuthConfigService {
         }
         authConfigRepository.findByServerIdAndUpstreamServiceId(serverId, normalized)
                 .ifPresent(authConfigRepository::delete);
+    }
+
+    // ---------------------------------------------------------------- Auth-B：Tool 级（BR-4）
+
+    /**
+     * 保存某个 Tool 专属的上行授权（BR-4）。
+     *
+     * <p>三层优先级的最后一环：{@code tool.authBOverride} &gt; {@code upstream.authB} &gt;
+     * {@code server.authB}。同一 REST 服务里个别接口用不同凭据时用它表达，
+     * 不必为了一个接口把整个服务拆成两份配置。
+     *
+     * <p>把 {@code type} 设为 {@code NONE} 即撤销该 Tool 的覆盖，回落到 REST 服务级——
+     * 这也是唯一的「清除」方式：密钥字段留空表示不修改，无法用来清空。
+     */
+    @Transactional
+    public ServerDtos.AuthBView saveToolAuthB(McpServer server, Long toolId, ServerDtos.AuthBRequest request) {
+        if (toolId == null || toolId <= 0) {
+            throw PlatformException.validation("Tool 级上行授权必须指定 toolId",
+                    Map.of("field", "toolId"));
+        }
+        AuthConfig config = toolLevelConfig(server.getId(), toolId).orElseGet(() -> {
+            AuthConfig created = new AuthConfig();
+            created.setServerId(server.getId());
+            created.setToolId(toolId);
+            return created;
+        });
+        persistAuthB(server, config, request, "tool", Map.of("toolId", toolId));
+        return toolAuthBViews(server.getId()).getOrDefault(toolId, emptyAuthBView());
+    }
+
+    /** 单个 Tool 的覆盖回显（只回掩码）。未配置时返回 {@code NONE}，表示「回落上一层」。 */
+    @Transactional(readOnly = true)
+    public ServerDtos.AuthBView toolAuthBView(McpServer server, Long toolId) {
+        return toolAuthBViews(server.getId()).getOrDefault(toolId, emptyAuthBView());
+    }
+
+    /**
+     * 批量回显某 Server 下所有 Tool 级覆盖，Tools 面板一次性拉取用。
+     *
+     * <p>只取 {@code toolId != 0}：REST 服务级行的 toolId 恒为 0，不会被带进来。
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, ServerDtos.AuthBView> toolAuthBViews(Long serverId) {
+        Map<Long, ServerDtos.AuthBView> result = new LinkedHashMap<>();
+        for (AuthConfig config : authConfigRepository
+                .findByServerIdAndToolIdNot(serverId, AuthConfig.SERVER_LEVEL)) {
+            result.put(config.getToolId(), toAuthBView(config));
+        }
+        return result;
+    }
+
+    /** 删除某个 Tool 的上行授权（Tool 被移除或整份文档重解析时调用）。 */
+    @Transactional
+    public void deleteToolAuthB(Long serverId, Long toolId) {
+        if (toolId == null || toolId <= 0) {
+            return;
+        }
+        toolLevelConfig(serverId, toolId).ifPresent(authConfigRepository::delete);
+    }
+
+    /** 解密并组装某个 Tool 专属的上行授权快照；未配置时返回 {@code NONE}，由 Executor 继续回落。 */
+    @Transactional(readOnly = true)
+    public AuthBSnapshot resolveToolAuthB(McpServer server, Long toolId) {
+        if (toolId == null || toolId <= 0) {
+            return AuthBSnapshot.none();
+        }
+        return toSnapshot(toolLevelConfig(server.getId(), toolId).orElse(null));
     }
 
     /**
@@ -413,7 +481,13 @@ public class AuthConfigService {
     // ---------------------------------------------------------------- 内部工具
 
     private java.util.Optional<AuthConfig> serverLevelConfig(Long serverId) {
-        return authConfigRepository.findByServerIdAndToolId(serverId, AuthConfig.SERVER_LEVEL);
+        // 必须带 IsNull：REST 服务级的 toolId 同样是 0，只按 (serverId, 0) 查会在
+        // 「同一 Server 下 ≥2 个 REST 服务各配了 Auth-B」时命中多行 → Optional 抛异常 → 发布失败
+        return authConfigRepository.findByServerIdAndToolIdAndUpstreamServiceIdIsNull(serverId, AuthConfig.SERVER_LEVEL);
+    }
+
+    private java.util.Optional<AuthConfig> toolLevelConfig(Long serverId, Long toolId) {
+        return authConfigRepository.findByServerIdAndToolId(serverId, toolId);
     }
 
     private java.util.Optional<AuthConfig> upstreamLevelConfig(Long serverId, String serviceId) {

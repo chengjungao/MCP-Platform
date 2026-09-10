@@ -6,6 +6,7 @@ import { ElMessage } from 'element-plus'
 import AuthDPanel from '@/components/server/AuthDPanel.vue'
 import BasicPanel from '@/components/server/BasicPanel.vue'
 import PublishPanel from '@/components/server/PublishPanel.vue'
+import ResourcePromptPanel from '@/components/server/ResourcePromptPanel.vue'
 import ServerReadonlyPanel from '@/components/server/ServerReadonlyPanel.vue'
 import ToolsPanel from '@/components/server/ToolsPanel.vue'
 import UpstreamPanel from '@/components/server/UpstreamPanel.vue'
@@ -108,6 +109,9 @@ onMounted(() => {
           </el-tab-pane>
           <el-tab-pane label="Tool 与覆盖" name="tools" lazy>
             <ToolsPanel :server-id="serverId" @changed="load" />
+          </el-tab-pane>
+          <el-tab-pane label="Resource 与 Prompt" name="catalog" lazy>
+            <ResourcePromptPanel :server-id="serverId" @changed="load" />
           </el-tab-pane>
           <el-tab-pane label="差异与发布" name="publish" lazy>
             <PublishPanel :server-id="serverId" :server="server" @changed="load" />

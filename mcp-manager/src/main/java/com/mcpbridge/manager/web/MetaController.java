@@ -3,6 +3,7 @@ package com.mcpbridge.manager.web;
 import com.mcpbridge.common.protocol.McpProtocol;
 import com.mcpbridge.manager.config.ManagerProperties;
 import com.mcpbridge.manager.service.PermissionCatalog;
+import com.mcpbridge.manager.service.ResourcePromptService;
 import com.mcpbridge.manager.web.dto.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -42,6 +43,9 @@ public class MetaController {
         meta.put("defaultPathPrefix", properties.defaultPathPrefix());
         meta.put("pathSegmentPattern", com.mcpbridge.common.util.PathSegments.PATTERN);
         meta.put("toolNamePattern", com.mcpbridge.common.util.ToolNames.VALID_NAME);
+        // Resource / Prompt 的规则同样从这里下发，前端不硬编码（SVR-05/06）
+        meta.put("resourceUriPattern", ResourcePromptService.RESOURCE_URI);
+        meta.put("promptNamePattern", ResourcePromptService.PROMPT_NAME);
         meta.put("builtinRoles", List.copyOf(PermissionCatalog.BUILTIN_ROLES.keySet()));
         return ApiResponse.ok(meta);
     }

@@ -5,8 +5,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { notifyError } from '@/api/http'
 import * as serverApi from '@/api/server'
 import type { JsonSchema, ToolOverlayRequest, ToolView } from '@/api/types'
+import AuthBFields from '@/components/server/AuthBFields.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useMetaStore } from '@/stores/meta'
+import { authBFormFromView, authBFormToRequest, emptyAuthBForm, validateAuthBForm } from '@/utils/authB'
 import { labelOf, OVERLAY_STATUS_LABEL, statusTag } from '@/utils/format'
 import { changed } from '@/utils/form'
 
@@ -47,6 +49,18 @@ const initial = reactive({
   enabled: 'ON' as TriState,
   streaming: 'OFF' as TriState
 })
+
+/**
+ * Tool 级上行授权覆盖（BR-4）。
+ *
+ * <p>它是<b>独立存储</b>的（auth_config 表），不在 overlay JSON 里，所以改动判定用整份表单
+ * 的 JSON 快照对比。留空密钥表示不修改，要撤销覆盖只能把 type 选回 NONE。
+ */
+const authBForm = reactive(emptyAuthBForm())
+/** 打开时的表单快照；与当前值不同才提交，避免「打开就保存」把已有凭据的掩码当成新值写回。 */
+const authBInitialJson = ref('')
+/** 库里是否已存有 Tool 级凭据：有掩码即说明配过，密钥留空才合法。 */
+const toolHasStoredAuthB = ref(false)
 
 const toolNamePattern = computed<RegExp | null>(() => {
   const pattern = metaStore.meta?.toolNamePattern
@@ -96,11 +110,19 @@ function openOverlay(tool: ToolView): void {
     enabled: dialog.enabled,
     streaming: dialog.streaming
   })
+  Object.assign(authBForm, authBFormFromView(tool.authB))
+  toolHasStoredAuthB.value = Boolean(tool.authB?.maskedPreview)
+  authBInitialJson.value = JSON.stringify(authBForm)
   dialog.visible = true
 }
 
 function toBoolean(value: TriState): boolean | undefined {
   return value === 'KEEP' ? undefined : value === 'ON'
+}
+
+/** 该 tool 是否有 Tool 级上行鉴权覆盖（BR-4）。NONE 表示继承上一层，不算覆盖。 */
+function hasAuthBOverride(tool: ToolView): boolean {
+  return Boolean(tool.authB) && tool.authB?.type !== 'NONE'
 }
 
 async function submitOverlay(): Promise<void> {
@@ -141,6 +163,19 @@ async function submitOverlay(): Promise<void> {
     enabled: dialog.enabled === initial.enabled ? undefined : toBoolean(dialog.enabled),
     streaming: dialog.streaming === initial.streaming ? undefined : toBoolean(dialog.streaming)
   }
+
+  // Tool 级 Auth-B 覆盖：整份表单与打开时不同才提交。
+  // 密钥字段从空开始（后端只回掩码），所以「没动过」就等于「不要碰」，
+  // 这一条防的是「打开弹窗顺手点保存 → 把已有配置的 type 重置成 NONE 把凭据清掉」。
+  if (JSON.stringify(authBForm) !== authBInitialJson.value) {
+    const problem = validateAuthBForm(authBForm, toolHasStoredAuthB.value)
+    if (problem) {
+      ElMessage.warning(problem)
+      return
+    }
+    request.authB = authBFormToRequest(authBForm)
+  }
+
   // 后端即使一个字段都没改也会把 overlayVersion 加一，所以空提交在前端就拦掉
   const touched = Object.values(request).some((value) => value !== undefined)
   if (!touched) {
@@ -162,9 +197,10 @@ async function submitOverlay(): Promise<void> {
 }
 
 async function resetOverlay(tool: ToolView): Promise<void> {
+  const extra = hasAuthBOverride(tool) ? '，以及该 tool 的上行鉴权覆盖（会回落为继承 REST 服务级）' : ''
   try {
     await ElMessageBox.confirm(
-      `将清除 ${tool.effectiveName} 的全部覆盖，回落到原始文档解析出的值。此操作会记入审计。`,
+      `将清除 ${tool.effectiveName} 的全部覆盖${extra}，回落到原始文档解析出的值。此操作会记入审计。`,
       '恢复默认',
       { type: 'warning', confirmButtonText: '恢复默认', cancelButtonText: '取消' }
     )
@@ -278,8 +314,9 @@ onMounted(() => {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="标记" width="120">
+      <el-table-column label="标记" width="160">
         <template #default="{ row }">
+          <el-tag v-if="hasAuthBOverride(row)" type="danger" size="small" effect="plain">鉴权覆盖</el-tag>
           <el-tag v-if="row.streaming" type="warning" size="small" effect="plain">流式</el-tag>
           <el-tag v-if="row.idempotent" type="info" size="small" effect="plain">幂等</el-tag>
           <el-tag v-if="row.requestBodyRequired" type="info" size="small" effect="plain">需请求体</el-tag>
@@ -383,6 +420,21 @@ onMounted(() => {
         <el-form-item label="流式格式">
           <el-input v-model="dialog.streamFormat" maxlength="16" placeholder="sse / ndjson" :disabled="!canWrite" />
         </el-form-item>
+
+        <el-divider content-position="left">
+          <span class="divider-title">上行鉴权覆盖（Auth-B）</span>
+        </el-divider>
+        <el-alert type="info" :closable="false" show-icon class="tip">
+          <template #title>
+            只在「这个接口的上游凭据与同服务其它接口不同」时才需要配置
+          </template>
+          <template #default>
+            鉴权优先级：<span class="mono">Tool 级 &gt; REST 服务级 &gt; Server 级</span>。
+            选 <span class="mono">NONE</span> 表示不覆盖、直接继承所属 REST 服务的凭据——绝大多数接口应该保持 NONE。
+            密钥字段留空表示不修改；要撤销已有覆盖请把方式改回 NONE。
+          </template>
+        </el-alert>
+        <AuthBFields :form="authBForm" :has-stored-secret="toolHasStoredAuthB" :disabled="!canWrite" />
       </el-form>
 
       <template #footer>
@@ -422,5 +474,10 @@ onMounted(() => {
 .hint {
   font-size: 12px;
   line-height: 1.6;
+}
+
+.divider-title {
+  font-size: 13px;
+  font-weight: 600;
 }
 </style>

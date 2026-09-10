@@ -11,12 +11,15 @@ import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.PathSegments;
 import com.mcpbridge.manager.domain.AuditAction;
 import com.mcpbridge.manager.domain.BindingState;
+import com.mcpbridge.manager.domain.ClusterQuota;
 import com.mcpbridge.manager.domain.ExecutorCluster;
 import com.mcpbridge.manager.domain.McpServer;
 import com.mcpbridge.manager.domain.McpTool;
 import com.mcpbridge.manager.domain.OverlayStatus;
 import com.mcpbridge.manager.domain.PublishBinding;
 import com.mcpbridge.manager.domain.ServerStatus;
+import com.mcpbridge.manager.repository.McpPromptRepository;
+import com.mcpbridge.manager.repository.McpResourceRepository;
 import com.mcpbridge.manager.repository.McpServerRepository;
 import com.mcpbridge.manager.repository.PublishBindingRepository;
 import com.mcpbridge.manager.security.AuthPrincipal;
@@ -51,6 +54,8 @@ public class PublishService {
 
     private final PublishBindingRepository bindingRepository;
     private final McpServerRepository serverRepository;
+    private final McpResourceRepository resourceRepository;
+    private final McpPromptRepository promptRepository;
     private final ServerService serverService;
     private final ClusterService clusterService;
     private final SnapshotAssembler snapshotAssembler;
@@ -58,12 +63,16 @@ public class PublishService {
 
     public PublishService(PublishBindingRepository bindingRepository,
                           McpServerRepository serverRepository,
+                          McpResourceRepository resourceRepository,
+                          McpPromptRepository promptRepository,
                           ServerService serverService,
                           ClusterService clusterService,
                           SnapshotAssembler snapshotAssembler,
                           AuditService auditService) {
         this.bindingRepository = bindingRepository;
         this.serverRepository = serverRepository;
+        this.resourceRepository = resourceRepository;
+        this.promptRepository = promptRepository;
         this.serverService = serverService;
         this.clusterService = clusterService;
         this.snapshotAssembler = snapshotAssembler;
@@ -78,9 +87,11 @@ public class PublishService {
         McpServer server = serverService.requireManage(serverId, principal);
         ExecutorCluster cluster = clusterService.require(request.clusterId());
         clusterService.requirePublishPermission(cluster, server.getDeptId(), principal);
-        requirePublishable(server, cluster);
 
+        // 先取出启用 tool 列表：发布前校验与快照组装共用同一份，省一次查询也保证口径一致
         List<McpTool> enabledTools = serverService.enabledTools(serverId);
+        requirePublishable(server, cluster, enabledTools);
+
         Instant now = Instant.now();
         long version = nextVersion(serverId, cluster.getId());
         ServerSnapshot snapshot = snapshotAssembler.build(server, cluster, enabledTools, version, now);
@@ -115,8 +126,12 @@ public class PublishService {
                 cluster.getName(), BindingState.PUBLISHED, revision, message);
     }
 
-    /** PUB-01 发布前校验：宁可拦住，也不要把一个必然 500 的端点推给客户端。 */
-    private void requirePublishable(McpServer server, ExecutorCluster cluster) {
+    /**
+     * PUB-01 发布前校验：宁可拦住，也不要把一个必然 500 的端点推给客户端。
+     *
+     * @param enabledTools 调用方已取出的启用 tool 列表，避免在这里重复查一次库
+     */
+    private void requirePublishable(McpServer server, ExecutorCluster cluster, List<McpTool> enabledTools) {
         Map<String, Object> problems = new LinkedHashMap<>();
         if (!McpProtocol.isSupported(server.getProtocolVersion())) {
             problems.put("protocolVersion", "Server 协议版本必须是 " + McpProtocol.SUPPORTED_VERSION);
@@ -132,8 +147,7 @@ public class PublishService {
                 problems.put("upstream[" + i + "].baseUrls", "REST 服务 baseUrls 为空");
             }
         }
-        long enabledTools = serverService.enabledToolCount(server.getId());
-        if (enabledTools == 0) {
+        if (enabledTools.isEmpty()) {
             problems.put("tools", "没有任何启用状态的 tool，发布后 tools/list 将为空");
         }
         Set<String> duplicates = serverService.duplicateEffectiveNames(server.getId());
@@ -148,9 +162,35 @@ public class PublishService {
         if (!PathSegments.isValid(server.getPathSegment())) {
             problems.put("pathSegment", "PATH 末段不合法");
         }
+        problems.putAll(quotaProblems(server, cluster, enabledTools));
         if (!problems.isEmpty()) {
             throw new PlatformException(ErrorCode.INVALID_STATE, "发布前校验未通过", problems);
         }
+    }
+
+    /**
+     * 集群发布配额校验（PUB-01）。
+     *
+     * <p>配额是集群级的容量上限，此前 {@code executor_cluster.scopes} 字段只是「存了但从不校验」，
+     * 这里补上唯一缺失的读取方。判定规则本身在 {@link ClusterQuota#violations}（纯函数、可穷举单测），
+     * 本方法只负责把三处用量查出来。
+     *
+     * <p>用量口径刻意与「发布出去的东西」对齐：tool 只数<b>启用</b>的（停用的不进快照、不占容量），
+     * Resource/Prompt 数全部（它们不分启用/停用）。
+     */
+    private Map<String, Object> quotaProblems(McpServer server, ExecutorCluster cluster, List<McpTool> enabledTools) {
+        ClusterQuota quota = clusterService.quotaOf(cluster);
+        if (quota.isUnlimited()) {
+            return Map.of();
+        }
+        long publishedServers = bindingRepository.countByClusterIdAndCurrentTrueAndState(
+                cluster.getId(), BindingState.PUBLISHED);
+        boolean alreadyPublished = bindingRepository
+                .findByServerIdAndClusterIdAndCurrentTrue(server.getId(), cluster.getId())
+                .isPresent();
+        long catalogCount = resourceRepository.countByServerId(server.getId())
+                + promptRepository.countByServerId(server.getId());
+        return quota.violations(publishedServers, alreadyPublished, enabledTools.size(), catalogCount);
     }
 
     // ------------------------------------------------------------------ 下线

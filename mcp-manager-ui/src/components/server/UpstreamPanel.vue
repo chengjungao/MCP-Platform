@@ -178,6 +178,8 @@ const form = reactive({
   name: '',
   baseUrlsText: '',
   lbStrategy: 'ROUND_ROBIN' as LbStrategy,
+  /** 与 baseUrls 等长，按索引一一对应；仅在 WEIGHTED 时提交给后端。 */
+  weights: [] as number[],
   connectTimeoutMs: 3000,
   readTimeoutMs: 30000,
   retries: 1,
@@ -186,6 +188,25 @@ const form = reactive({
   cbOpenMs: 30000,
   cbHalfOpenProbes: 2
 })
+
+/** 服务地址逐行解析结果，权重编辑器按它逐项渲染，保证「一行地址 ↔ 一个权重」。 */
+const baseUrlList = computed(() => splitLines(form.baseUrlsText))
+
+/**
+ * 权重长度跟随地址数量。
+ *
+ * 地址增删时补齐或截断，已填的值按索引保留——重排权重比丢掉用户刚敲的数字更烦人。
+ * 新增项默认 1，等于「还没表态」，切到 WEIGHTED 时立刻是一个合法的等权配置。
+ */
+watch(
+  () => [form.lbStrategy, baseUrlList.value.length] as const,
+  () => {
+    if (form.lbStrategy !== 'WEIGHTED') return
+    const count = baseUrlList.value.length
+    form.weights = Array.from({ length: count }, (_, i) => form.weights[i] ?? 1)
+  },
+  { immediate: true }
+)
 
 /** 本 REST 服务专属的上行鉴权（Auth-B），与上面的连接参数一起提交。 */
 const authBForm = reactive(emptyAuthBForm())
@@ -200,6 +221,7 @@ watch(
       form.name = value.name ?? value.serviceId
       form.baseUrlsText = (value.config?.baseUrls ?? []).join('\n')
       form.lbStrategy = value.config?.lbStrategy ?? 'ROUND_ROBIN'
+      form.weights = [...(value.config?.weights ?? [])]
       form.connectTimeoutMs = value.config?.connectTimeoutMs ?? 3000
       form.readTimeoutMs = value.config?.readTimeoutMs ?? 30000
       form.retries = value.config?.retries ?? 1
@@ -232,6 +254,21 @@ async function submit(): Promise<void> {
     ElMessage.warning(authProblem)
     return
   }
+  // 权重只在 WEIGHTED 下有语义。后端会拒绝「WEIGHTED 却没给权重」，前端先行一步是为了
+  // 把错误定位到具体第几个地址，而不是只回一句「权重非法」。
+  let weights: number[] | undefined
+  if (form.lbStrategy === 'WEIGHTED') {
+    weights = Array.from({ length: baseUrls.length }, (_, i) => Number(form.weights[i] ?? 0))
+    const negativeIndex = weights.findIndex((w) => !Number.isFinite(w) || w < 0)
+    if (negativeIndex >= 0) {
+      ElMessage.warning(`第 ${negativeIndex + 1} 个地址的权重必须是非负整数`)
+      return
+    }
+    if (weights.reduce((sum, w) => sum + w, 0) <= 0) {
+      ElMessage.warning('权重之和必须大于 0，否则 Executor 无法分发')
+      return
+    }
+  }
   saving.value = true
   try {
     emit(
@@ -241,6 +278,7 @@ async function submit(): Promise<void> {
         name: form.name,
         baseUrls,
         lbStrategy: form.lbStrategy,
+        weights,
         connectTimeoutMs: form.connectTimeoutMs,
         readTimeoutMs: form.readTimeoutMs,
         retries: form.retries,
@@ -291,6 +329,7 @@ function startNewUpstream(): void {
   form.name = ''
   form.baseUrlsText = ''
   form.lbStrategy = 'ROUND_ROBIN'
+  form.weights = []
   form.connectTimeoutMs = 3000
   form.readTimeoutMs = 30000
   form.retries = 1
@@ -413,13 +452,27 @@ function startNewUpstream(): void {
         </el-radio-group>
       </el-form-item>
 
-      <el-alert v-if="form.lbStrategy === 'WEIGHTED'" type="warning" :closable="false" show-icon class="tip">
-        <template #title>当前版本不落库权重，选 WEIGHTED 的实际效果等同轮询</template>
-        <template #default>
-          Manager 写入快照时 weights 恒为空数组，Executor 发现权重数量与地址数量不匹配后会退回轮询
-          （这条退化路径有单元测试覆盖）。权重编辑随 P1 提供，现在请直接用轮询，免得配置与实际行为不一致。
-        </template>
-      </el-alert>
+      <el-form-item v-if="form.lbStrategy === 'WEIGHTED'" label="权重">
+        <div class="weight-list">
+          <div v-for="(url, i) in baseUrlList" :key="`${i}-${url}`" class="weight-row">
+            <span class="mono weight-addr" :title="url">{{ url }}</span>
+            <el-input-number
+              v-model="form.weights[i]"
+              :min="0"
+              :max="1000"
+              size="small"
+              controls-position="right"
+              :disabled="!auth.can('server:write')"
+            />
+          </div>
+          <div v-if="baseUrlList.length === 0" class="hint muted">先填写服务地址，权重按地址逐项对应。</div>
+          <div v-else class="hint muted">
+            权重与地址按顺序一一对应，本行合计 {{ form.weights.reduce((sum, w) => sum + (Number(w) || 0), 0) }}。
+            后端会校验「数量与地址一致、总和大于 0」；写入后由 Executor 按权分发。
+            全部填相同值等价于轮询，不必为了「稳妥」一律填 1。
+          </div>
+        </div>
+      </el-form-item>
 
       <el-form-item label="连接超时">
         <el-input-number v-model="form.connectTimeoutMs" :min="100" :max="60000" :step="500" :disabled="!auth.can('server:write')" />
@@ -595,6 +648,28 @@ function startNewUpstream(): void {
 
 .unit {
   margin-left: 8px;
+  font-size: 12px;
+}
+
+/* 权重编辑器：地址左、权重右，逐行对齐，长地址省略但不换行破坏对应关系 */
+.weight-list {
+  width: 100%;
+  max-width: 520px;
+}
+
+.weight-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.weight-addr {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
 }
 </style>

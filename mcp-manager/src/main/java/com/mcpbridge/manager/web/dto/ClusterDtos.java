@@ -1,5 +1,7 @@
 package com.mcpbridge.manager.web.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.mcpbridge.manager.domain.ClusterQuota;
 import com.mcpbridge.manager.domain.ClusterType;
 import com.mcpbridge.manager.domain.NodeStatus;
 import jakarta.validation.constraints.NotBlank;
@@ -36,7 +38,14 @@ public final class ClusterDtos {
             long onlineNodeCount,
             long publishedServerCount,
             long revision,
-            Instant createdAt) {
+            Instant createdAt,
+            /**
+             * 发布配额；{@code null} 表示不限。
+             *
+             * <p>与 {@code publishedServerCount} 一起就能在列表页直接显示 "3/50"，
+             * 不必让前端再算一次。
+             */
+            ClusterQuota quota) {
     }
 
     public record ClusterRequest(
@@ -47,7 +56,13 @@ public final class ClusterDtos {
             Long ownerDeptId,
             @Size(max = 255) String description,
             Boolean enabled,
-            Map<String, Object> scopes) {
+            /**
+             * 发布配额，形如 {@code {"maxServers":50,"maxToolsPerServer":200}}；省略或空对象 = 不限。
+             *
+             * <p>这里刻意收 {@code Map} 而不是强类型 record：校验规则（非整数、负数）要能
+             * 以 {@code ApiResponse} 的结构化 details 返回，交给 {@link ClusterQuota#of} 在服务层做。
+             */
+            @JsonAlias("scopes") Map<String, Object> quota) {
     }
 
     /** 集群发布授权（US-05：把某集群的发布权授给部门）。 */

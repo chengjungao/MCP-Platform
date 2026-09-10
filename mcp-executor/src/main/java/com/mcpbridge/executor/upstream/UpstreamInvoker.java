@@ -5,9 +5,12 @@ import com.mcpbridge.common.snapshot.ServerSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.snapshot.UpstreamSnapshot;
 import com.mcpbridge.common.util.LogSanitizer;
+import com.mcpbridge.common.util.TraceContext;
 import com.mcpbridge.executor.auth.UpstreamCredentials;
 import com.mcpbridge.executor.config.ExecutorProperties;
 import com.mcpbridge.executor.mcp.McpErrorException;
+import com.mcpbridge.executor.metrics.ExecutorMetrics;
+import io.micrometer.core.instrument.Timer;
 import io.netty.channel.ChannelOption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,6 +77,7 @@ public class UpstreamInvoker {
 
     private final ExecutorProperties properties;
     private final CircuitBreakerRegistry breakers;
+    private final ExecutorMetrics metrics;
 
     /** key = "connect|read|maxBytes"；组合数量有限（等于不同超时档位的数量），不需要淘汰。 */
     private final ConcurrentHashMap<String, WebClient> clients = new ConcurrentHashMap<>();
@@ -81,15 +85,20 @@ public class UpstreamInvoker {
     /** 轮询计数器按 Server 隔离，避免高频 Server 打乱低频 Server 的分发节奏。 */
     private final ConcurrentHashMap<String, AtomicLong> counters = new ConcurrentHashMap<>();
 
-    public UpstreamInvoker(ExecutorProperties properties, CircuitBreakerRegistry breakers) {
+    public UpstreamInvoker(ExecutorProperties properties, CircuitBreakerRegistry breakers, ExecutorMetrics metrics) {
         this.properties = properties;
         this.breakers = breakers;
+        this.metrics = metrics;
     }
 
+    /**
+     * @param traceparent 发往上游的 W3C {@code traceparent}（OPS-02），可为 null（不注入）
+     */
     public Mono<UpstreamResponse> invoke(ServerSnapshot server,
                                          ToolSnapshot tool,
                                          RestRequest request,
-                                         UpstreamCredentials credentials) {
+                                         UpstreamCredentials credentials,
+                                         String traceparent) {
         com.mcpbridge.common.snapshot.UpstreamEntry entry = server.effectiveUpstream(tool);
         UpstreamSnapshot upstream = entry.config() != null
                 ? entry.config()
@@ -109,6 +118,7 @@ public class UpstreamInvoker {
                 ? upstream.circuitBreaker()
                 : UpstreamSnapshot.CircuitBreaker.defaults();
         if (!breakers.allow(breakerKey, breakerConfig)) {
+            metrics.recordCircuitRejection(breakerKey);
             return Mono.error(upstreamError(server, "上游熔断已打开，暂时拒绝调用",
                     Map.of("serverId", server.serverId(),
                             "pathSegment", nullSafe(server.pathSegment()),
@@ -129,7 +139,10 @@ public class UpstreamInvoker {
         WebClient client = clientFor(upstream.connectTimeoutMs(), upstream.readTimeoutMs());
         int budget = properties.upstream().maxResponseBytes();
 
-        Mono<UpstreamResponse> call = Mono.defer(() -> exchange(client, uri, request, credentials, budget)
+        Mono<UpstreamResponse> call = Mono.defer(() -> exchange(client, uri, request, credentials, traceparent, budget)
+                // 每次真正发出的请求都记一笔，重试也不例外——否则看板上的「上游请求数」会比实际少
+                .doOnNext(response -> metrics.recordUpstreamAttempt(breakerKey, response.status()))
+                .doOnError(error -> metrics.recordUpstreamTransportFailure(breakerKey))
                 .flatMap(response -> {
                     if (canRetry && retryOnStatus.contains(response.status())) {
                         // 用一个内部信号把「这个状态码值得再试一次」传给 retryWhen：
@@ -142,20 +155,38 @@ public class UpstreamInvoker {
         if (canRetry) {
             call = call.retryWhen(Retry.fixedDelay(retries, RETRY_DELAY)
                     .filter(t -> isRetryable(t, retryOnStatus))
-                    .doBeforeRetry(signal -> log.warn("上游调用重试第 {} 次 server={} tool={} 原因={}",
-                            signal.totalRetries() + 1, server.pathSegment(), tool.name(),
-                            LogSanitizer.sanitize(String.valueOf(signal.failure())))));
+                    .doBeforeRetry(signal -> {
+                        metrics.recordUpstreamRetry(breakerKey);
+                        log.warn("上游调用重试第 {} 次 server={} tool={} 原因={}",
+                                signal.totalRetries() + 1, server.pathSegment(), tool.name(),
+                                LogSanitizer.sanitize(String.valueOf(signal.failure())));
+                    }));
         }
 
+        // 计时包住整个 invoke（含重试）：调用方等的是这个数，不是单次尝试的耗时
+        Timer.Sample sample = metrics.startTimer();
         return call
                 .doOnNext(response -> {
                     if (response.isServerError()) {
-                        breakers.onFailure(breakerKey, breakerConfig);
+                        reportFailure(breakerKey, breakerConfig);
                     } else {
                         breakers.onSuccess(breakerKey);
                     }
                 })
-                .onErrorResume(t -> recover(server, tool, uri, breakerKey, breakerConfig, t));
+                .onErrorResume(t -> recover(server, tool, uri, breakerKey, breakerConfig, t))
+                .doFinally(signal -> metrics.recordUpstreamDuration(breakerKey, sample));
+    }
+
+    /**
+     * 上报一次上游失败。
+     *
+     * <p>只在「本次失败把熔断从非 OPEN 推到 OPEN」时记 trip：不这么分的话，一个持续挂着的上游
+     * 会每次调用都刷一条「熔断打开」，告警会被淹没在噪声里。
+     */
+    private void reportFailure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+        if (breakers.onFailure(breakerKey, config)) {
+            metrics.recordCircuitTrip(breakerKey);
+        }
     }
 
     // ------------------------------------------------------------------ 负载均衡
@@ -189,6 +220,8 @@ public class UpstreamInvoker {
             // 一个配错的权重不该让整个已发布端点直接不可用。
             log.warn("server={} 配置了 WEIGHTED 但权重不可用（weights={}），本次退回轮询",
                     server.pathSegment(), upstream.weights());
+            // 这条日志会随每次调用重复，但「配了权重却没生效」是一个需要被发现的问题，必须可计数
+            metrics.recordWeightedFallback(server.pathSegment());
         }
         return baseUrls.get((int) Math.floorMod(counter.getAndIncrement(), size));
     }
@@ -233,16 +266,18 @@ public class UpstreamInvoker {
                                             URI uri,
                                             RestRequest request,
                                             UpstreamCredentials credentials,
+                                            String traceparent,
                                             int budget) {
         WebClient.RequestBodySpec spec = client
                 .method(HttpMethod.valueOf(request.method()))
                 .uri(uri)
-                .headers(headers -> applyHeaders(headers, request, credentials));
+                .headers(headers -> applyHeaders(headers, request, credentials, traceparent));
         WebClient.RequestHeadersSpec<?> ready = request.hasBody() ? spec.bodyValue(request.body()) : spec;
         return ready.exchangeToMono(response -> readBody(response, budget));
     }
 
-    private void applyHeaders(HttpHeaders headers, RestRequest request, UpstreamCredentials credentials) {
+    private void applyHeaders(HttpHeaders headers, RestRequest request, UpstreamCredentials credentials,
+                              String traceparent) {
         headers.set(HttpHeaders.USER_AGENT, "MCP-Bridge-Executor/" + properties.node().version());
         if (request.headers() != null) {
             request.headers().forEach(headers::set);
@@ -250,6 +285,14 @@ public class UpstreamInvoker {
         // 上行凭据后写，覆盖同名头：调用方不能通过伪造 header 参数改掉 Authorization
         if (credentials != null && credentials.headers() != null) {
             credentials.headers().forEach(headers::set);
+        }
+        // 链路头在最后写，且先移除同名头。两条理由：
+        // 一是调用方可能通过参数映射塞一个同名 header 进来，让平台下发的 trace 被顶掉；
+        // 二是凭据模板（CUSTOM_HEADER）也可能正好叫 traceparent。链路标识属于平台自有的观测元数据，
+        // 被客户配置覆盖会让「这条链路归谁」出现两个互相矛盾的答案。
+        if (traceparent != null && !traceparent.isBlank()) {
+            headers.remove(TraceContext.HEADER);
+            headers.set(TraceContext.HEADER, traceparent);
         }
         if (request.hasBody() && headers.getContentType() == null) {
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -355,7 +398,7 @@ public class UpstreamInvoker {
         Throwable cause = unwrap(throwable);
         if (cause instanceof RetryableUpstream retryable) {
             UpstreamResponse response = retryable.response();
-            breakers.onFailure(breakerKey, breakerConfig);
+            reportFailure(breakerKey, breakerConfig);
             log.warn("上游重试后仍失败 server={} tool={} status={}",
                     server.pathSegment(), tool.name(), response.status());
             return Mono.just(response);
@@ -363,7 +406,7 @@ public class UpstreamInvoker {
         if (cause instanceof McpErrorException error) {
             return Mono.error(error);
         }
-        breakers.onFailure(breakerKey, breakerConfig);
+        reportFailure(breakerKey, breakerConfig);
         String reason = LogSanitizer.sanitizeAndTruncate(String.valueOf(cause.getMessage()), 256);
         log.warn("上游调用失败 server={} tool={} host={} 原因={}",
                 server.pathSegment(), tool.name(), uri.getHost(), reason);

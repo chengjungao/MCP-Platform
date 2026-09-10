@@ -11,6 +11,7 @@ import com.mcpbridge.common.protocol.McpProtocol;
 import com.mcpbridge.common.snapshot.ServerSnapshot;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.LogSanitizer;
+import com.mcpbridge.common.util.TraceContext;
 import com.mcpbridge.executor.auth.DownstreamAuthenticator;
 import com.mcpbridge.executor.config.ExecutorProperties;
 import com.mcpbridge.executor.mcp.LegacyProtocolException;
@@ -120,6 +121,11 @@ public class McpEndpointController {
         }
 
         JsonNode id = request.id();
+        // 链路上下文（OPS-02）：一次解析、全程复用。放在这里而不是各个子流程里各自解析，
+        // 是为了让「回写响应头的 id」与「发给上游的 traceparent」必然是同一个 trace——
+        // 两处各生成一次的话，调用方拿着响应头里的 id 去上游日志里根本搜不到。
+        TraceContext trace = resolveTrace(headers, request);
+
         try {
             guard.requireModern(headers, request);
             guard.requireValidEnvelope(request);
@@ -165,9 +171,21 @@ public class McpEndpointController {
         String method = guard.resolveMethod(headers, request.method());
         // Mono.defer 是必需的：dispatcher 内部有大量同步抛出（参数缺失、tool 不存在），
         // 不包一层的话这些异常会绕过 onErrorResume 直接冒到框架层，变成一个语焉不详的 500
-        return Mono.defer(() -> dispatcher.dispatch(server, method, request, headers))
-                .map(response -> success(response, method, server, request))
-                .onErrorResume(e -> Mono.just(failure(id, segment, e)));
+        return Mono.defer(() -> dispatcher.dispatch(server, method, request, headers, trace))
+                .map(response -> success(response, method, server, trace))
+                .onErrorResume(e -> Mono.just(failure(id, segment, e, trace)));
+    }
+
+    /**
+     * 确定本次请求的链路上下文。
+     *
+     * <p>来源优先级：标准 HTTP {@code traceparent} 头 → MCP {@code _meta.traceparent} →
+     * {@code _meta.traceId}。先看 HTTP 头是因为 W3C 感知的网关/客户端都走头，
+     * 而 {@code _meta} 是 MCP 自有的通道，属于「客户端只能填 _meta」时的兜底。
+     */
+    private static TraceContext resolveTrace(HttpHeaders headers, JsonRpcRequest request) {
+        String traceparent = firstNonBlank(headers.getFirst(TraceContext.HEADER), request.metaText("traceparent"));
+        return TraceContext.inbound(traceparent, request.metaText("traceId"));
     }
 
     /**
@@ -206,7 +224,7 @@ public class McpEndpointController {
     private ResponseEntity<String> success(JsonRpcResponse response,
                                            String method,
                                            ServerSnapshot server,
-                                           JsonRpcRequest request) {
+                                           TraceContext trace) {
         ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON);
         if (CACHEABLE_METHODS.contains(method)) {
             int ttl = server.listTtlMs() > 0 ? server.listTtlMs() : properties.protocol().defaultListTtlMs();
@@ -215,25 +233,27 @@ public class McpEndpointController {
             builder.cacheControl(CacheControl.maxAge(Duration.ofMillis(ttl)).cachePrivate());
         }
         builder.header(McpHeaders.PROTOCOL_VERSION, McpProtocol.SUPPORTED_VERSION);
-        String traceId = request.traceId();
-        if (traceId != null && !traceId.isBlank()) {
-            builder.header("X-Trace-Id", traceId);
-        }
+        // 回写的是<b>实际下发到上游的那个 trace-id</b>，而不是调用方原样给的值。
+        // 调用方给的如果是任意字符串（非 W3C 形态），平台只能另起一个 trace，
+        // 此时把新 id 告诉他才有意义——否则他拿着自己的字符串去上游日志里搜不到任何东西。
+        builder.header(TraceContext.LEGACY_HEADER, trace.traceId());
         return builder.body(Json.write(response));
     }
 
-    private ResponseEntity<String> failure(JsonNode id, String segment, Throwable throwable) {
+    private ResponseEntity<String> failure(JsonNode id, String segment, Throwable throwable, TraceContext trace) {
+        // 失败响应同样带上 trace-id：出问题时正是最需要它的时候
+        Consumer<HttpHeaders> traceHeader = head -> head.set(TraceContext.LEGACY_HEADER, trace.traceId());
         if (throwable instanceof McpErrorException error) {
-            return json(statusOf(error.httpStatus()), JsonRpcResponse.error(id, error.error()), null);
+            return json(statusOf(error.httpStatus()), JsonRpcResponse.error(id, error.error()), traceHeader);
         }
         if (throwable instanceof LegacyProtocolException legacy) {
-            return json(HttpStatus.BAD_REQUEST, legacy.toResponse(id), null);
+            return json(HttpStatus.BAD_REQUEST, legacy.toResponse(id), traceHeader);
         }
         // 未预期错误：不回传异常消息。上游栈信息里可能带着内部地址、SQL 片段甚至凭据
-        log.error("处理 MCP 请求时发生未预期错误 segment={}", segment, throwable);
+        log.error("处理 MCP 请求时发生未预期错误 segment={} traceId={}", segment, trace.traceId(), throwable);
         return json(HttpStatus.INTERNAL_SERVER_ERROR,
                 JsonRpcResponse.error(id, JsonRpcError.internal("内部错误，请联系平台管理员并提供 traceId")),
-                null);
+                traceHeader);
     }
 
     /** 解析失败用哨兵对象表示，避免和「合法解析出的请求」混淆。 */
@@ -274,5 +294,15 @@ public class McpEndpointController {
 
     private static String nullSafe(String value) {
         return value == null ? "" : value;
+    }
+
+    /** 取第一个非空白值；全为空则返回 null，交由 {@link TraceContext#inbound} 决定兜底。 */
+    private static String firstNonBlank(String... candidates) {
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank()) {
+                return candidate;
+            }
+        }
+        return null;
     }
 }

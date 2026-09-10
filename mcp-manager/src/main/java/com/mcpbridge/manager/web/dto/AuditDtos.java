@@ -26,4 +26,13 @@ public final class AuditDtos {
             String clientIp,
             Instant createdAt) {
     }
+
+    /**
+     * 审计导出结果（MGM-05）。
+     *
+     * <p>{@code rows} 单独回传而不是让调用方去数换行：导出动作本身要写审计，
+     * "导出了多少行"是这个审计条目里最有价值的字段，数错比不记更糟。
+     */
+    public record Export(String csv, int rows) {
+    }
 }

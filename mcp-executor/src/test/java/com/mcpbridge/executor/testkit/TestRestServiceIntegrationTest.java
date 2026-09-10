@@ -42,7 +42,7 @@ class TestRestServiceIntegrationTest {
 
     private final ObjectMapper json = new ObjectMapper();
     private final CircuitBreakerRegistry breakers = new CircuitBreakerRegistry();
-    private final UpstreamInvoker invoker = new UpstreamInvoker(properties(), breakers);
+    private final UpstreamInvoker invoker = new UpstreamInvoker(properties(), breakers, TestMetrics.create(breakers));
     private final AtomicLong serverIds = new AtomicLong(500);
 
     private TestRestService upstream;
@@ -61,7 +61,7 @@ class TestRestServiceIntegrationTest {
     @DisplayName("GET 详情：真实 HTTP 打到假上游并拿回 200 与 JSON 体")
     void getOrderReturns200() {
         StepVerifier.create(invoker.invoke(server("getOrder", "GET"), tool("getOrder", "GET", "/api/orders/1"),
-                        request("GET", "/api/orders/1"), UpstreamCredentials.empty()))
+                        request("GET", "/api/orders/1"), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(200);
                     assertThat(response.isSuccess()).isTrue();
@@ -82,7 +82,7 @@ class TestRestServiceIntegrationTest {
     @DisplayName("GET 不存在的订单：上游 404 原样透传，不算链路故障（isServerError=false）")
     void getMissingOrderReturns404() {
         StepVerifier.create(invoker.invoke(server("getOrder", "GET"), tool("getOrder", "GET", "/api/orders/999"),
-                        request("GET", "/api/orders/999"), UpstreamCredentials.empty()))
+                        request("GET", "/api/orders/999"), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(404);
                     assertThat(response.isSuccess()).isFalse();
@@ -98,7 +98,7 @@ class TestRestServiceIntegrationTest {
         Map<String, Object> body = Map.of("customerId", 9L, "amount", 42.5);
         StepVerifier.create(invoker.invoke(server("createOrder", "POST"),
                         tool("createOrder", "POST", "/api/orders"),
-                        request("POST", "/api/orders", body), UpstreamCredentials.empty()))
+                        request("POST", "/api/orders", body), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(201);
                     assertThat(response.headers().getFirst("Location")).isNotBlank();
@@ -122,7 +122,7 @@ class TestRestServiceIntegrationTest {
         upstream.failNext(1, 503);
 
         StepVerifier.create(invoker.invoke(server("getOrder", "GET"), tool("getOrder", "GET", "/api/orders/1"),
-                        request("GET", "/api/orders/1"), UpstreamCredentials.empty()))
+                        request("GET", "/api/orders/1"), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(200);
                     assertThat(response.isSuccess()).isTrue();
@@ -142,7 +142,7 @@ class TestRestServiceIntegrationTest {
                 new RestRequest.QueryParam("page", "1"),
                 new RestRequest.QueryParam("size", "10"));
         StepVerifier.create(invoker.invoke(server("listOrders", "GET"), tool("listOrders", "GET", "/api/orders"),
-                        request("GET", "/api/orders", query), UpstreamCredentials.empty()))
+                        request("GET", "/api/orders", query), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(200);
                     assertThat(readBody(response).path("total").asLong()).isEqualTo(1L);
@@ -158,7 +158,7 @@ class TestRestServiceIntegrationTest {
     @DisplayName("第二个业务域（user）同样可调用：一进程多服务、多文档语义成立")
     void getUserFromSecondDomain() {
         StepVerifier.create(invoker.invoke(server("getUser", "GET"), tool("getUser", "GET", "/api/users/1"),
-                        request("GET", "/api/users/1"), UpstreamCredentials.empty()))
+                        request("GET", "/api/users/1"), UpstreamCredentials.empty(), null))
                 .assertNext(response -> {
                     assertThat(response.status()).isEqualTo(200);
                     JsonNode body = readBody(response);
@@ -167,6 +167,38 @@ class TestRestServiceIntegrationTest {
                 })
                 .expectComplete()
                 .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    @DisplayName("OPS-02：traceparent 穿过真实 HTTP 栈到达上游请求头，内容原样")
+    void injectsTraceparentIntoUpstreamRequest() {
+        String traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-1a2b3c4d5e6f7081-01";
+
+        StepVerifier.create(invoker.invoke(server("getOrder", "GET"), tool("getOrder", "GET", "/api/orders/1"),
+                        request("GET", "/api/orders/1"), UpstreamCredentials.empty(), traceparent))
+                .assertNext(response -> assertThat(response.status()).isEqualTo(200))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
+
+        String sent = upstream.captured().get(0).headers().get("traceparent");
+        assertThat(sent).as("上游必须收到 traceparent，否则链路在桥接层断开").isEqualTo(traceparent);
+    }
+
+    @Test
+    @DisplayName("OPS-02：调用方通过参数映射塞进来的同名头不能顶掉平台的 traceparent")
+    void platformTraceparentWinsOverCallerSuppliedHeader() {
+        String spoofed = "00-11111111111111111111111111111111-2222222222222222-01";
+        RestRequest withHeader = new RestRequest("GET", "/api/orders/1", null,
+                Map.of("traceparent", spoofed), null);
+
+        StepVerifier.create(invoker.invoke(server("getOrder", "GET"), tool("getOrder", "GET", "/api/orders/1"),
+                        withHeader, UpstreamCredentials.empty(), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+                .assertNext(response -> assertThat(response.status()).isEqualTo(200))
+                .expectComplete()
+                .verify(Duration.ofSeconds(5));
+
+        String sent = upstream.captured().get(0).headers().get("traceparent");
+        assertThat(sent).contains("4bf92f3577b34da6a3ce929d0e0e4736").doesNotContain("1111111111111111");
     }
 
     @Test

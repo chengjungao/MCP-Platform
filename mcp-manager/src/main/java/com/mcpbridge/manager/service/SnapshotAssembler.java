@@ -50,13 +50,16 @@ public class SnapshotAssembler {
     private final ServerService serverService;
     private final AuthConfigService authConfigService;
     private final OverlayService overlayService;
+    private final ResourcePromptService resourcePromptService;
 
     public SnapshotAssembler(ServerService serverService,
                              AuthConfigService authConfigService,
-                             OverlayService overlayService) {
+                             OverlayService overlayService,
+                             ResourcePromptService resourcePromptService) {
         this.serverService = serverService;
         this.authConfigService = authConfigService;
         this.overlayService = overlayService;
+        this.resourcePromptService = resourcePromptService;
     }
 
     /**
@@ -72,7 +75,12 @@ public class SnapshotAssembler {
         AuthBSnapshot authB = authConfigService.resolveAuthB(server);
         AuthDSnapshot authD = authConfigService.resolveAuthD(server, endpoint);
         List<com.mcpbridge.common.snapshot.UpstreamEntry> upstreams = serverService.upstreamEntriesOf(server);
-        List<ToolSnapshot> tools = enabledTools.stream().map(overlayService::toSnapshot).toList();
+        // Tool 级 Auth-B 覆盖（BR-4）：每份快照固化自己那一层的凭据，Executor 侧的
+        // effectiveAuthB 按 override → REST 服务级 → Server 级 回落
+        List<ToolSnapshot> tools = enabledTools.stream()
+                .map(tool -> overlayService.toSnapshot(tool,
+                        authConfigService.resolveToolAuthB(server, tool.getId())))
+                .toList();
         return new ServerSnapshot(
                 server.getId(),
                 server.getDeptId() == null ? 0L : server.getDeptId(),
@@ -88,8 +96,10 @@ public class SnapshotAssembler {
                 authB,
                 upstreams,
                 tools,
-                List.of(),
-                List.of(),
+                // Resource / Prompt 是手动配置的目录（SVR-05/06）。之前这里恒传空列表，
+                // 导致 Executor 侧那套完整的 list/read/get 实现「对外永远是空目录」
+                resourcePromptService.resourceSnapshots(server),
+                resourcePromptService.promptSnapshots(server),
                 server.getListTtlMs(),
                 publishedAt);
     }

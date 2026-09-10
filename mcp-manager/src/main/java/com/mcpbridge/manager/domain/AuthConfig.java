@@ -131,7 +131,24 @@ public class AuthConfig extends BaseEntity {
     public String getMaskedPreview() { return maskedPreview; }
     public void setMaskedPreview(String maskedPreview) { this.maskedPreview = maskedPreview; }
 
+    /**
+     * 三个维度<b>互斥</b>，判定必须同时看 {@code toolId} 与 {@code upstreamServiceId}。
+     *
+     * <p>注意不能写成 {@code toolId == SERVER_LEVEL} 就当作 Server 级：V5 之后 REST 服务级
+     * 同样是 {@code toolId = 0}，只看 toolId 会把两类配置混成一类——按 {@code (serverId, 0)}
+     * 查 {@code Optional} 时命中多行会直接抛 {@code IncorrectResultSizeDataAccessException}。
+     */
     public boolean isServerLevel() {
-        return toolId == SERVER_LEVEL;
+        return toolId == SERVER_LEVEL && upstreamServiceId == null;
+    }
+
+    /** Tool 级覆盖（BR-4）：{@code toolId} 非 0，且不参与 {@code upstreamServiceId} 维度。 */
+    public boolean isToolLevel() {
+        return toolId != SERVER_LEVEL;
+    }
+
+    /** REST 服务级（主用形态）：{@code toolId = 0} 且 {@code upstreamServiceId} 非空。 */
+    public boolean isUpstreamLevel() {
+        return toolId == SERVER_LEVEL && upstreamServiceId != null;
     }
 }

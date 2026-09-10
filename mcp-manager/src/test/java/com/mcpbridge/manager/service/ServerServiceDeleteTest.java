@@ -54,20 +54,27 @@ class ServerServiceDeleteTest {
         upstreamRepository = mock(ServerUpstreamRepository.class);
         registrationRepository = mock(ApiRegistrationRepository.class);
         auditService = mock(AuditService.class);
+        // 访问校验已下沉到 ServerAccessGuard（解开与 ResourcePromptService 的循环依赖），
+        // 这里用真实实例 + mock 仓储，保持「requireManage 会走部门校验」这条行为仍被覆盖。
+        ServerAccessGuard accessGuard = new ServerAccessGuard(
+                serverRepository,
+                mock(com.mcpbridge.manager.repository.ServerAccessRepository.class),
+                mock(DepartmentScope.class));
         serverService = new ServerService(
                 serverRepository,
                 mock(McpToolRepository.class),
                 bindingRepository,
                 clusterRepository,
                 upstreamRepository,
-                mock(com.mcpbridge.manager.repository.ServerAccessRepository.class),
                 mock(AuthConfigService.class),
                 mock(OverlayService.class),
                 mock(PathSegmentGuard.class),
                 mock(DepartmentScope.class),
                 mock(DepartmentService.class),
                 auditService,
-                registrationRepository);
+                registrationRepository,
+                accessGuard,
+                mock(ResourcePromptService.class));
         // requireManage：deptId=99 命中 mock 的 canAccess
         McpServer server = server(1L, 99L, null);
         when(serverRepository.findById(1L)).thenReturn(Optional.of(server));

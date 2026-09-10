@@ -13,6 +13,8 @@ import com.mcpbridge.common.snapshot.ResourceSnapshot;
 import com.mcpbridge.common.snapshot.ServerSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.util.Json;
+import com.mcpbridge.common.util.PromptTemplate;
+import com.mcpbridge.common.util.TraceContext;
 import com.mcpbridge.executor.config.ExecutorProperties;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -22,8 +24,6 @@ import reactor.core.publisher.Mono;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * MCP 方法分派（2026-07-28）。
@@ -38,9 +38,6 @@ import java.util.regex.Pattern;
 @Service
 public class McpDispatcher {
 
-    /** Prompt 模板占位符 {@code {{argName}}}。 */
-    private static final Pattern PROMPT_ARGUMENT = Pattern.compile("\\{\\{\\s*([A-Za-z0-9_.\\-]+)\\s*}}");
-
     private final ExecutorProperties properties;
     private final ProtocolGuard guard;
     private final ToolCallService toolCallService;
@@ -53,20 +50,25 @@ public class McpDispatcher {
         this.toolCallService = toolCallService;
     }
 
+    /**
+     * @param trace 链路上下文（OPS-02）。非空由控制器保证——每个入站请求都必须有可下发的 traceparent，
+     *              「调用方没给」不是例外的理由，平台自己起一个即可
+     */
     public Mono<JsonRpcResponse> dispatch(ServerSnapshot server,
                                           String method,
                                           JsonRpcRequest request,
-                                          HttpHeaders headers) {
+                                          HttpHeaders headers,
+                                          TraceContext trace) {
         String resolved = method == null ? "" : method;
         return switch (resolved) {
             case McpMethods.PING -> Mono.just(JsonRpcResponse.ok(request.id(), Json.obj()));
             case McpMethods.SERVER_DISCOVER -> Mono.just(JsonRpcResponse.ok(request.id(), discover(server)));
             case McpMethods.TOOLS_LIST -> Mono.just(JsonRpcResponse.ok(request.id(), listTools(server, request)));
             case McpMethods.TOOLS_CALL ->
-                    callTool(server, request, headers).map(result -> JsonRpcResponse.ok(request.id(), result));
+                    callTool(server, request, headers, trace).map(result -> JsonRpcResponse.ok(request.id(), result));
             case McpMethods.RESOURCES_LIST -> Mono.just(JsonRpcResponse.ok(request.id(), listResources(server)));
             case McpMethods.RESOURCES_READ ->
-                    readResource(server, request).map(result -> JsonRpcResponse.ok(request.id(), result));
+                    readResource(server, request, trace).map(result -> JsonRpcResponse.ok(request.id(), result));
             case McpMethods.PROMPTS_LIST -> Mono.just(JsonRpcResponse.ok(request.id(), listPrompts(server)));
             case McpMethods.PROMPTS_GET ->
                     getPrompt(server, request).map(result -> JsonRpcResponse.ok(request.id(), result));
@@ -131,7 +133,8 @@ public class McpDispatcher {
         return result;
     }
 
-    private Mono<ObjectNode> callTool(ServerSnapshot server, JsonRpcRequest request, HttpHeaders headers) {
+    private Mono<ObjectNode> callTool(ServerSnapshot server, JsonRpcRequest request, HttpHeaders headers,
+                                      TraceContext trace) {
         String toolName = guard.resolveToolName(headers, request);
         if (toolName == null || toolName.isBlank()) {
             throw McpErrorException.of(HttpStatus.BAD_REQUEST.value(), JsonRpcErrorCodes.INVALID_PARAMS,
@@ -150,7 +153,7 @@ public class McpDispatcher {
                             "streamFormat", nullSafe(tool.streamFormat()),
                             "hint", "请在覆盖配置中关闭该操作，或等待 P1 流式支持"));
         }
-        return toolCallService.call(server, tool, request.param("arguments"));
+        return toolCallService.call(server, tool, request.param("arguments"), trace);
     }
 
     // ------------------------------------------------------------------ resources
@@ -169,7 +172,7 @@ public class McpDispatcher {
         return result;
     }
 
-    private Mono<ObjectNode> readResource(ServerSnapshot server, JsonRpcRequest request) {
+    private Mono<ObjectNode> readResource(ServerSnapshot server, JsonRpcRequest request, TraceContext trace) {
         String uri = request.paramText("uri");
         if (uri == null || uri.isBlank()) {
             throw McpErrorException.of(HttpStatus.BAD_REQUEST.value(), JsonRpcErrorCodes.INVALID_PARAMS,
@@ -196,7 +199,7 @@ public class McpDispatcher {
                 HttpStatus.BAD_GATEWAY.value(), JsonRpcErrorCodes.UPSTREAM_ERROR,
                 "资源 " + uri + " 映射的 tool " + toolName + " 不存在（可能是覆盖配置把它禁用了）",
                 Map.of("uri", uri, "tool", toolName)));
-        return toolCallService.call(server, tool, null)
+        return toolCallService.call(server, tool, null, trace)
                 .map(callResult -> resourceContents(resource, firstText(callResult)));
     }
 
@@ -272,23 +275,8 @@ public class McpDispatcher {
         message.put("role", "user");
         ObjectNode content = message.putObject("content");
         content.put("type", "text");
-        content.put("text", render(prompt.template(), arguments));
+        content.put("text", PromptTemplate.render(prompt.template(), arguments));
         return Mono.just(result);
-    }
-
-    /** 未提供的占位符替换成空串而不是原样保留：{@code {{orderId}}} 出现在最终提示词里会误导模型。 */
-    private static String render(String template, Map<String, String> arguments) {
-        if (template == null || template.isBlank()) {
-            return "";
-        }
-        Matcher matcher = PROMPT_ARGUMENT.matcher(template);
-        StringBuilder rendered = new StringBuilder();
-        while (matcher.find()) {
-            matcher.appendReplacement(rendered,
-                    Matcher.quoteReplacement(arguments.getOrDefault(matcher.group(1), "")));
-        }
-        matcher.appendTail(rendered);
-        return rendered.toString();
     }
 
     // ------------------------------------------------------------------ 公共片段

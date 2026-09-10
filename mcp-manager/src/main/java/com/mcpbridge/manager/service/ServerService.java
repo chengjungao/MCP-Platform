@@ -60,7 +60,6 @@ public class ServerService {
     private final PublishBindingRepository bindingRepository;
     private final ExecutorClusterRepository clusterRepository;
     private final com.mcpbridge.manager.repository.ServerUpstreamRepository upstreamRepository;
-    private final com.mcpbridge.manager.repository.ServerAccessRepository accessRepository;
     private final AuthConfigService authConfigService;
     private final OverlayService overlayService;
     private final PathSegmentGuard pathSegmentGuard;
@@ -68,26 +67,28 @@ public class ServerService {
     private final DepartmentService departmentService;
     private final AuditService auditService;
     private final ApiRegistrationRepository registrationRepository;
+    private final ServerAccessGuard accessGuard;
+    private final ResourcePromptService resourcePromptService;
 
     public ServerService(McpServerRepository serverRepository,
                          McpToolRepository toolRepository,
                          PublishBindingRepository bindingRepository,
                          ExecutorClusterRepository clusterRepository,
                          com.mcpbridge.manager.repository.ServerUpstreamRepository upstreamRepository,
-                         com.mcpbridge.manager.repository.ServerAccessRepository accessRepository,
                          AuthConfigService authConfigService,
                          OverlayService overlayService,
                          PathSegmentGuard pathSegmentGuard,
                          DepartmentScope departmentScope,
                          DepartmentService departmentService,
                          AuditService auditService,
-                         ApiRegistrationRepository registrationRepository) {
+                         ApiRegistrationRepository registrationRepository,
+                         ServerAccessGuard accessGuard,
+                         ResourcePromptService resourcePromptService) {
         this.serverRepository = serverRepository;
         this.toolRepository = toolRepository;
         this.bindingRepository = bindingRepository;
         this.clusterRepository = clusterRepository;
         this.upstreamRepository = upstreamRepository;
-        this.accessRepository = accessRepository;
         this.authConfigService = authConfigService;
         this.overlayService = overlayService;
         this.pathSegmentGuard = pathSegmentGuard;
@@ -95,6 +96,8 @@ public class ServerService {
         this.departmentService = departmentService;
         this.auditService = auditService;
         this.registrationRepository = registrationRepository;
+        this.accessGuard = accessGuard;
+        this.resourcePromptService = resourcePromptService;
     }
 
     // ------------------------------------------------------------------ 查询
@@ -124,35 +127,28 @@ public class ServerService {
      * 与旧 requireServer 语义一致；403 而非 404，避免掩盖存在性。
      */
     @Transactional(readOnly = true)
+    /**
+     * 写权校验：本部门树内可写，或平台管理员。
+     *
+     * <p>实现已下沉到 {@link ServerAccessGuard}（便于 ResourcePromptService 复用而不产生循环依赖），
+     * 这里保留同名方法，控制器与其它服务的调用点不用动。
+     */
     public McpServer requireManage(Long id, AuthPrincipal principal) {
-        McpServer server = serverRepository.findById(id).orElseThrow(() -> PlatformException.notFound("MCP Server", id));
-        departmentScope.requireAccess(server.getDeptId(), principal);
-        return server;
+        return accessGuard.requireManage(id, principal);
     }
 
-    /**
-     * 读权校验：管理权（本部门树/管理员）之外，放行持有 APPROVED 跨部门授权的部门成员。
-     * 授权覆盖部门子树：grant.dept ∈ 祖先链(principal.deptId) 即命中。
-     */
-    @Transactional(readOnly = true)
+    /** 读权校验：管理权之外，放行持有 APPROVED 跨部门授权的部门成员（详见 ServerAccessGuard）。 */
     public McpServer requireRead(Long id, AuthPrincipal principal) {
-        McpServer server = serverRepository.findById(id).orElseThrow(() -> PlatformException.notFound("MCP Server", id));
-        if (departmentScope.canAccess(server.getDeptId(), principal)) {
-            return server;
-        }
-        boolean granted = accessRepository.existsByServerIdAndDeptIdInAndStatus(
-                id, departmentScope.deptChainToRoot(principal.deptId()), AccessStatus.APPROVED);
-        if (!granted) {
-            throw PlatformException.forbidden("无权访问该 Server（可发起跨部门访问申请，需资源方授权）");
-        }
-        return server;
+        return accessGuard.requireRead(id, principal);
     }
 
     @Transactional(readOnly = true)
     public List<ServerDtos.ToolView> tools(Long serverId, AuthPrincipal principal) {
         requireRead(serverId, principal);
+        Map<Long, ServerDtos.AuthBView> authBOverrides = authConfigService.toolAuthBViews(serverId);
         return toolRepository.findByServerIdOrderBySortOrderAsc(serverId).stream()
-                .map(overlayService::toToolView)
+                .map(tool -> overlayService.toToolView(tool,
+                        authBOverrides.getOrDefault(tool.getId(), AuthConfigService.emptyAuthBView())))
                 .toList();
     }
 
@@ -167,6 +163,9 @@ public class ServerService {
     @Transactional(readOnly = true)
     public ServerDtos.EffectiveModelView effectiveModel(Long serverId, AuthPrincipal principal) {
         McpServer server = requireManage(serverId, principal);
+        // 走不带 authBOverride 的重载：ToolSnapshot 里的 AuthBSnapshot 是解密后的明文，
+        // 而这个接口是给控制台看「发布后会是什么样」的，绝不能回凭据（SEC-01）。
+        // 需要看完整快照（含凭据）的只有内部通道。
         List<ToolSnapshot> tools = toolRepository.findByServerIdOrderBySortOrderAsc(serverId).stream()
                 .filter(McpTool::isEnabled)
                 .map(overlayService::toSnapshot)
@@ -174,7 +173,9 @@ public class ServerService {
         return new ServerDtos.EffectiveModelView(
                 server.getId(), server.getName(), server.getPathSegment(), server.getTitle(),
                 server.getDescription(), server.getVersion(), server.getProtocolVersion(),
-                server.getListTtlMs(), tools);
+                server.getListTtlMs(), tools,
+                resourcePromptService.resourceSnapshots(server),
+                resourcePromptService.promptSnapshots(server));
     }
 
     // ------------------------------------------------------------------ 写入
@@ -365,10 +366,13 @@ public class ServerService {
                 orDefault(request.cbFailureThreshold(), 5),
                 orDefault(request.cbOpenMs(), 30_000L),
                 orDefault(request.cbHalfOpenProbes(), 2));
+        UpstreamSnapshot.LbStrategy lbStrategy = request.lbStrategy() == null
+                ? UpstreamSnapshot.LbStrategy.ROUND_ROBIN : request.lbStrategy();
+        List<Integer> weights = requireWeights(lbStrategy, request.weights(), baseUrls.size());
         UpstreamSnapshot config = new UpstreamSnapshot(
                 baseUrls,
-                request.lbStrategy() == null ? UpstreamSnapshot.LbStrategy.ROUND_ROBIN : request.lbStrategy(),
-                List.of(),
+                lbStrategy,
+                weights,
                 orDefault(request.connectTimeoutMs(), 3_000L),
                 orDefault(request.readTimeoutMs(), 30_000L),
                 orDefault(request.retries(), 1),
@@ -387,6 +391,7 @@ public class ServerService {
         upstream.setName(truncate(request.name(), 128) == null ? serviceId : truncate(request.name(), 128));
         upstream.setBaseUrls(Json.write(config.baseUrls()));
         upstream.setLbStrategy(config.lbStrategy().name());
+        upstream.setWeights(weights.isEmpty() ? null : Json.write(weights));
         upstream.setConnectTimeout(config.connectTimeoutMs());
         upstream.setReadTimeout(config.readTimeoutMs());
         upstream.setRetries(config.retries());
@@ -408,10 +413,61 @@ public class ServerService {
                         "serviceId", serviceId,
                         "baseUrls", baseUrls,
                         "lbStrategy", config.lbStrategy().name(),
+                        "weights", weights,
                         "connectTimeoutMs", config.connectTimeoutMs(),
                         "readTimeoutMs", config.readTimeoutMs(),
                         "retries", config.retries())));
         return toViews(List.of(saved), principal).get(saved.getId());
+    }
+
+    /**
+     * 权重校验：<b>只在配置期做</b>，不在运行时做。
+     *
+     * <p>Executor 发现权重数量与地址数量不匹配时会退回轮询并打 WARN——那是防御性的兜底，
+     * 但如果控制面允许把非法权重写进去，这个兜底就会变成常态，而运维看到的只是「配置成功了」。
+     * 因此这里分为两类处理：
+     * <ul>
+     *   <li>{@code WEIGHTED} 但权重缺失/非法 → <b>拒绝</b>（400），指出该改哪个字段；</li>
+     *   <li>非 {@code WEIGHTED} 但给了权重 → <b>保留</b>并允许为空：权重可以提前配好，
+     *       等切到 WEIGHTED 时直接生效。仍校验长度，避免存下一份永远用不上的脏数据。</li>
+     * </ul>
+     *
+     * <p>package-private 是为了让校验规则能脱离 Spring 上下文单测——权重是「配置期能拦住就
+     * 绝不留到运行期」的典型，规则本身值得被钉住。
+     */
+    static List<Integer> requireWeights(UpstreamSnapshot.LbStrategy strategy,
+                                        List<Integer> weights,
+                                        int addressCount) {
+        boolean weighted = strategy == UpstreamSnapshot.LbStrategy.WEIGHTED;
+        List<Integer> normalized = weights == null
+                ? List.of()
+                : weights.stream().map(w -> w == null ? -1 : w).toList();
+        if (normalized.isEmpty()) {
+            if (weighted) {
+                throw PlatformException.validation(
+                        "负载策略为 WEIGHTED 时必须为每个上游地址提供权重",
+                        Map.of("field", "weights",
+                                "hint", "weights 需与 baseUrls 等长，例如 2 个地址 → [7,3]"));
+            }
+            return List.of();
+        }
+        if (normalized.size() != addressCount) {
+            throw PlatformException.validation(
+                    "权重数量必须与上游地址数量一致",
+                    Map.of("field", "weights",
+                            "weightCount", normalized.size(),
+                            "baseUrlCount", addressCount));
+        }
+        if (normalized.stream().anyMatch(w -> w < 0)) {
+            throw PlatformException.validation(
+                    "权重不能为负数或空值", Map.of("field", "weights", "weights", normalized));
+        }
+        if (weighted && normalized.stream().mapToInt(Integer::intValue).sum() <= 0) {
+            throw PlatformException.validation(
+                    "WEIGHTED 策略下权重之和必须大于 0，否则无法分发",
+                    Map.of("field", "weights", "weights", normalized));
+        }
+        return List.copyOf(normalized);
     }
 
     /** SVR-02：单个 Tool 的覆盖编辑。 */
@@ -460,14 +516,27 @@ public class ServerService {
 
         overlayService.writeToolOverlay(tool, overlay);
         toolRepository.save(tool);
+
+        // Tool 级 Auth-B 覆盖（BR-4）：独立存储，不在 overlay JSON 里。
+        // 传 null = 本次不动（避免前端漏传把已配好的覆盖清掉）；type=NONE = 撤销覆盖。
+        if (request.authB() != null) {
+            authConfigService.saveToolAuthB(server, tool.getId(), request.authB());
+            changes.put("authB", request.authB().type() == null ? "已更新" : request.authB().type().name());
+        }
+
         bumpOverlayVersion(server);
         if (!changes.isEmpty()) {
             auditService.record(AuditAction.TOOL_OVERLAY_UPDATE, "tool", tool.getId(), changes);
         }
-        return overlayService.toToolView(tool);
+        return overlayService.toToolView(tool, authConfigService.toolAuthBView(server, tool.getId()));
     }
 
-    /** SVR-02：清除某个 Tool 的全部覆盖，回落到基座值。 */
+    /**
+     * SVR-02：清除某个 Tool 的全部覆盖，回落到基座值。
+     *
+     * <p>「全部覆盖」包含 Tool 级 Auth-B：它是这个 Tool 上的覆盖项之一，留着不删会让
+     * 「已重置」的提示与实际行为不符（鉴权仍在按 Tool 级走）。
+     */
     @Transactional
     public ServerDtos.ToolView resetToolOverlay(Long serverId, Long toolId, AuthPrincipal principal) {
         McpServer server = requireManage(serverId, principal);
@@ -475,10 +544,11 @@ public class ServerService {
         tool.setOverlay(null);
         tool.setOverlayStatus(OverlayStatus.NONE);
         toolRepository.save(tool);
+        authConfigService.deleteToolAuthB(serverId, toolId);
         bumpOverlayVersion(server);
         auditService.record(AuditAction.TOOL_OVERLAY_RESET, "tool", tool.getId(),
                 Map.of("anchor", tool.getAnchor(), "baseName", tool.getBaseName()));
-        return overlayService.toToolView(tool);
+        return overlayService.toToolView(tool, AuthConfigService.emptyAuthBView());
     }
 
     /** SVR-04：批量启用/停用 Tool。 */
@@ -506,8 +576,10 @@ public class ServerService {
             auditService.record(AuditAction.TOOL_TOGGLE, "server", serverId,
                     Map.of("enabled", request.enabled(), "anchors", changed));
         }
+        Map<Long, ServerDtos.AuthBView> authBOverrides = authConfigService.toolAuthBViews(serverId);
         return toolRepository.findByServerIdOrderBySortOrderAsc(serverId).stream()
-                .map(overlayService::toToolView)
+                .map(tool -> overlayService.toToolView(tool,
+                        authBOverrides.getOrDefault(tool.getId(), AuthConfigService.emptyAuthBView())))
                 .toList();
     }
 

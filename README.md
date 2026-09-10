@@ -138,10 +138,15 @@ HTTP 镜像被 Maven 3.9 的 `maven-default-http-blocker` 拦截。
 本仓库是 **P0 可运行骨架**：可编译、可启动、可测试，治理链路端到端打通。
 
 已实现：注册解析（上传 / URL / 粘贴 / 重新解析 + diff）、base ⊕ overlay 覆盖与挂起区、
-Server/Tool 精修、上游策略与负载均衡、Auth-B 五种鉴权（按 REST 服务独立配置，凭据 AES-256-GCM 加密托管）、
-Auth-D 的 NONE 与 STATIC_BEARER、集群与节点管理、发布 / 下线 / 回滚、快照两段式同步、
-MCP 2026-07-28 端点（`server/discover` / `tools/list` / `tools/call` / `ping`）、
-Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离、审计、Vue3 控制台。
+Server/Tool 精修、上游策略与负载均衡（含 **WEIGHTED 权重配置**，配置期校验 + Executor 按权分发）、
+Auth-B 五种鉴权（Server / REST 服务 / Tool 三级，凭据 AES-256-GCM 加密托管）、
+Auth-D 的 NONE 与 STATIC_BEARER、**Resource / Prompt 声明**（SVR-05/06，随快照下发）、
+集群与节点管理（含**发布配额**）、发布 / 下线 / 回滚、快照两段式同步、
+MCP 2026-07-28 端点（`server/discover` / `tools/list` / `tools/call` /
+`resources/list` / `resources/read` / `prompts/list` / `prompts/get` / `ping`）、
+Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离、
+审计（**DB 级 append-only 强制 + CSV 导出**）、
+Executor 业务指标（`/actuator/prometheus`）与出站 W3C `traceparent` 注入、Vue3 控制台。
 
 **明确未实现**（都在 [架构说明 §10](docs/ARCHITECTURE.md#10-已知取舍与缺口) 里写明现状与影响，
 不做委婉表述）：
@@ -152,17 +157,18 @@ Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离
 - **Auth-D OAuth 2.1（EXE-07）**：元数据会存、`resourceMetadataUrl` 会派生，但授权码 + PKCE + DCR
   未实现。配置成 OAUTH2 的 Server 端点**显式拒绝**（501 + `-32004`）——半实现的鉴权比没有
   鉴权更危险，因为它会让运维误以为端点已受保护。
-- **resources / prompts 管理（SVR-05/06）**：executor 运行时已就绪（list/read/get + discover 门控 +
-  快照），manager 缺管理模型 / UI / 组装 → 对外恒返回空目录 + `ttlMs`（P1，Swagger 推导不出这两类对象）。
+- **运行时限流（P2）**：**有意不做**，边界划在"鉴权注入 + 超时/重试/熔断 + 容量配额"。
+  容量配额（`executor_cluster.quota`）已实现且发布时强制；请求速率限制需要令牌桶 +
+  协议级拒绝语义 + 快照新字段，是独立的 P1 设计项。见
+  [架构说明 §4.6](docs/ARCHITECTURE.md#46-发布配额pub-01) 的对比表。
 - **PATH 变更 301 迁移提示（P2）**：路径末段变更后旧地址的迁移提示未实现。
-- **WEIGHTED 权重编辑器（P2）**：权重已可落库（`server_upstream.weights` JSONB）且 Executor 按权分发，
-  权重与地址数量不匹配时退回轮询并告警（EXE-04 主体已提前完成）；剩余缺口是控制台权重编辑器。
 
 ---
 
 ## 待办事项（Backlog）
 
-> 盘点日期：2026-09-07；基准：[PRD v0.2 §5.5](docs/PRD/MCP平台_产品规格文档_v0.2.md) 需求功能清单。
+> 盘点日期：2026-09-07；**复核 2026-09-10（代码级交叉核对，见
+> [功能盘点-2026-09-10](docs/功能盘点-2026-09-10.md)）**；基准：[PRD v0.2 §5.5](docs/PRD/MCP平台_产品规格文档_v0.2.md) 需求功能清单。
 > 结论：**P0 / MVP 已全部落地**；下表均为 P1 / P2 后续项。编号即 PRD 功能编号。
 
 ### 已就绪待评审（唯一有完整方案）
@@ -176,20 +182,23 @@ Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离
 | 编号 | 待办 | 现状 / 缺口 |
 | --- | --- | --- |
 | EXE-07 | Auth-D OAuth 2.1 | 元数据、`resourceMetadataUrl` 派生已存；授权码 + PKCE + DCR 未实现，OAUTH2 配置现显式拒绝（501 + `-32004`） |
-| SVR-05/06 | Resource / Prompt 管理 | executor 运行时已就绪，manager 无管理模型 / UI / 组装 → 对外恒空清单 |
 | SVR-07 | 变更审核 | 覆盖 / 发布进待审批未做；现有「审核」仅覆盖跨部门访问申请（AccessService） |
-| PUB-05 | 发布可观测看板 | 健康 / 调用量看板，需与 Executor 指标打通 |
-| OPS-02 | W3C Trace Context | 当前仅 `X-Trace-Id` 响应回传，注入上游未做 |
+| PUB-05 | 发布可观测看板 | 健康 / 调用量看板，需与 Executor 指标打通（指标源已就绪，见下方 OPS-01） |
 | SEC-03 | PIPL / GDPR 合规标注 | 数据分类分级标注未做 |
+
+### P2 未开始
+
+| 编号 | 待办 | 现状 / 说明 |
+| --- | --- | --- |
+| — | 运行时限流 | **有意不做**（见 [架构说明 §4.6](docs/ARCHITECTURE.md#46-发布配额pub-01) 对比表）。容量配额已实现；速率限制需要令牌桶 + 协议级拒绝语义 + 快照新字段，属独立 P1 设计项 |
+| — | PATH 变更 301 迁移提示 | 改末段即断链，只能提前通知使用方 |
 
 ### 部分完成（收尾项）
 
 | 编号 | 待办 | 已完成 | 待收尾 |
 | --- | --- | --- | --- |
-| REG-03 | 注册解析增强 | overlay 挂起区（suspendedOverlays diff） | re-import diff 报告；文档多版本历史链（现单份原文 sha256） |
+| REG-03 | 注册解析增强 | overlay 挂起区（suspendedOverlays diff）＋ **re-import diff 报告已落地**（`POST /registrations/{id}/reimport[-upload]` → `DiffReport`，控制台重解析入口） | 文档多版本历史链（现仅单份原文 + sha256，无版本序列） |
 | EXE-04 | 健康剔除 | 轮询 / 加权 + 熔断 HALF_OPEN 探测 | 主动健康探测摘除 |
-| OPS-01 | Prometheus 指标 | executor pom 依赖就位 | `/metrics` 端点未见实现痕迹（待核实） |
-| MGM-05 | 审计 | 页面 + 动作已落地 | append-only 严格不可篡改未评估 |
 
 ### 提前完成（勿重复排期）
 
@@ -198,7 +207,11 @@ Modern-only 协议守卫、Redisson 共享状态与降级、RBAC 与部门隔离
 | PUB-04 | 发布回滚 |
 | EXE-04（主体） | 多实例轮询 · 加权 · 熔断 |
 | SVR-04 | 流式声明（SSE 声明 / 能力门控） |
-| 其他 | tool 级 Auth-B 覆盖（authBOverride）、审计页面与动作（MGM-05 主体） |
+| SVR-05/06 | Resource / Prompt 管理（实体 + 迁移 + 服务 + 控制器 + 控制台面板 + 快照装配 + 单测） |
+| OPS-01 | Executor 业务指标：tool 调用量与结果三分（success / upstream_error / platform_error）、上游尝试按 status_class 四档、耗时、重试、WEIGHTED 退化、熔断 trip/rejection/state、快照 5 项 gauge（`ExecutorMetrics`） |
+| OPS-02 | 入站解析 + **出站注入** W3C `traceparent`（`TraceContext` 放 common，trace-id 跨跳稳定、span-id 每跳换新、非法输入不产出非法头），`X-Trace-Id` 回写实际下发的 id |
+| MGM-05 | 审计：页面 + 动作 + **DB 级 append-only**（V8 触发器 + REVOKE）+ **CSV 导出**（公式注入防护、UTF-8 BOM、行数上限拒绝而非截断、导出动作本身留痕） |
+| 其他 | tool 级 Auth-B 覆盖（authBOverride，含控制台编辑入口与「恢复默认」连带清除）；集群发布配额（`executor_cluster.quota`，发布时强制） |
 
 ---
 

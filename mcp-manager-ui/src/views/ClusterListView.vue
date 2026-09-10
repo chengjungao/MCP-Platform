@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as clusterApi from '@/api/cluster'
 import { notifyError } from '@/api/http'
 import * as orgApi from '@/api/org'
-import type { ClusterRequest, ClusterType, ClusterView, NodeView } from '@/api/types'
+import type { ClusterQuota, ClusterRequest, ClusterType, ClusterView, NodeView } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { copyText } from '@/utils/clipboard'
 import { flattenDepartments, type DepartmentOption } from '@/utils/departments'
@@ -32,7 +32,11 @@ const editDialog = reactive({
     pathPrefix: '',
     ownerDeptId: undefined as number | undefined,
     description: '',
-    enabled: true
+    enabled: true,
+    // 三个配额维度留空即「不限」。用 undefined 而不是 0——0 是一个有意义的取值（一个都不允许）。
+    quotaMaxServers: undefined as number | undefined,
+    quotaMaxToolsPerServer: undefined as number | undefined,
+    quotaMaxCatalogItemsPerServer: undefined as number | undefined
   }
 })
 const grantDialog = reactive({
@@ -97,6 +101,9 @@ function openCreate(): void {
   editDialog.form.ownerDeptId = undefined
   editDialog.form.description = ''
   editDialog.form.enabled = true
+  editDialog.form.quotaMaxServers = undefined
+  editDialog.form.quotaMaxToolsPerServer = undefined
+  editDialog.form.quotaMaxCatalogItemsPerServer = undefined
   editDialog.visible = true
 }
 
@@ -109,7 +116,24 @@ function openEdit(cluster: ClusterView): void {
   editDialog.form.ownerDeptId = cluster.ownerDeptId
   editDialog.form.description = cluster.description ?? ''
   editDialog.form.enabled = cluster.enabled
+  // 后端在「不限」时回 null，此时三个输入框都留空
+  editDialog.form.quotaMaxServers = cluster.quota?.maxServers ?? undefined
+  editDialog.form.quotaMaxToolsPerServer = cluster.quota?.maxToolsPerServer ?? undefined
+  editDialog.form.quotaMaxCatalogItemsPerServer = cluster.quota?.maxCatalogItemsPerServer ?? undefined
   editDialog.visible = true
+}
+
+/** 三个输入全空 → 不下发 quota 字段，让后端把它当作「不限」（而不是拆掉已有配额）。 */
+function quotaPayload(): ClusterQuota | undefined {
+  const quota: ClusterQuota = {}
+  if (editDialog.form.quotaMaxServers != null) quota.maxServers = editDialog.form.quotaMaxServers
+  if (editDialog.form.quotaMaxToolsPerServer != null) {
+    quota.maxToolsPerServer = editDialog.form.quotaMaxToolsPerServer
+  }
+  if (editDialog.form.quotaMaxCatalogItemsPerServer != null) {
+    quota.maxCatalogItemsPerServer = editDialog.form.quotaMaxCatalogItemsPerServer
+  }
+  return Object.keys(quota).length > 0 ? quota : undefined
 }
 
 async function submitEdit(): Promise<void> {
@@ -120,7 +144,8 @@ async function submitEdit(): Promise<void> {
     pathPrefix: editDialog.form.pathPrefix.trim() || undefined,
     ownerDeptId: editDialog.form.ownerDeptId,
     description: editDialog.form.description.trim() || undefined,
-    enabled: editDialog.form.enabled
+    enabled: editDialog.form.enabled,
+    quota: quotaPayload()
   }
   if (!request.name || !request.entrypoint) {
     ElMessage.warning('集群名与入口地址都必填')
@@ -208,6 +233,30 @@ async function offlineNode(cluster: ClusterView, node: NodeView): Promise<void> 
 async function copyToken(): Promise<void> {
   if (await copyText(tokenDialog.token)) ElMessage.success('令牌已复制')
   else ElMessage.error('复制失败，请手动选择文本')
+}
+
+/**
+ * 配额摘要。
+ *
+ * Server 维度带上当前用量（"3/50"），因为它是唯一一个会随发布自然增长的维度，
+ * 也最容易在某次发布时才撞上；另外两个维度取决于单个 Server 的规模，写上限就够了。
+ */
+function quotaText(row: ClusterView): string {
+  if (!row.quota) return '不限'
+  const parts: string[] = []
+  if (row.quota.maxServers != null) {
+    parts.push(`Server ${row.publishedServerCount}/${row.quota.maxServers}`)
+  }
+  if (row.quota.maxToolsPerServer != null) parts.push(`tool ≤ ${row.quota.maxToolsPerServer}`)
+  if (row.quota.maxCatalogItemsPerServer != null) {
+    parts.push(`目录 ≤ ${row.quota.maxCatalogItemsPerServer}`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : '不限'
+}
+
+/** Server 维度已用满：此时新的 Server 发不进来（已发布的重新发布不受影响）。 */
+function quotaExhausted(row: ClusterView): boolean {
+  return row.quota?.maxServers != null && row.publishedServerCount >= row.quota.maxServers
 }
 
 onMounted(() => {
@@ -322,6 +371,12 @@ onMounted(() => {
         </template>
       </el-table-column>
       <el-table-column prop="publishedServerCount" label="已发布" width="90" align="center" />
+      <el-table-column label="发布配额" min-width="200">
+        <template #default="{ row }">
+          <span :class="{ 'quota-full': quotaExhausted(row) }">{{ quotaText(row) }}</span>
+          <div v-if="quotaExhausted(row)" class="muted small">Server 名额已用满，新的 Server 发不进来</div>
+        </template>
+      </el-table-column>
       <el-table-column label="revision" width="100" align="center">
         <template #default="{ row }"><span class="mono">{{ row.revision }}</span></template>
       </el-table-column>
@@ -388,6 +443,51 @@ onMounted(() => {
           <el-switch v-model="editDialog.form.enabled" />
           <div class="hint muted">停用后不能往该集群发布，已发布的端点仍由 Executor 继续提供。</div>
         </el-form-item>
+        <el-form-item label="发布配额">
+          <div class="quota-grid">
+            <div class="quota-item">
+              <span class="quota-label">本集群最多发布</span>
+              <el-input-number
+                v-model="editDialog.form.quotaMaxServers"
+                :min="0"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                placeholder="不限"
+              />
+              <span class="quota-unit">个 Server</span>
+            </div>
+            <div class="quota-item">
+              <span class="quota-label">单个 Server 最多</span>
+              <el-input-number
+                v-model="editDialog.form.quotaMaxToolsPerServer"
+                :min="0"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                placeholder="不限"
+              />
+              <span class="quota-unit">个 tool</span>
+            </div>
+            <div class="quota-item">
+              <span class="quota-label">单个 Server 最多</span>
+              <el-input-number
+                v-model="editDialog.form.quotaMaxCatalogItemsPerServer"
+                :min="0"
+                :step="1"
+                step-strictly
+                controls-position="right"
+                placeholder="不限"
+              />
+              <span class="quota-unit">个 Resource + Prompt</span>
+            </div>
+          </div>
+          <div class="hint muted">
+            留空表示该维度不限，<b>0 表示一个都不允许</b>（可用于临时冻结某个集群）。
+            配额在<b>发布时</b>校验：超出就拒绝发布并逐项说明原因，已经在跑的端点不受影响。
+            改配额不会让 Executor 重载快照。
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editDialog.visible = false">取消</el-button>
@@ -445,5 +545,34 @@ onMounted(() => {
 .hint {
   font-size: 12px;
   line-height: 1.6;
+}
+
+.quota-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.quota-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quota-label {
+  width: 120px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.quota-unit {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.quota-full {
+  color: var(--el-color-danger);
+  font-weight: 600;
 }
 </style>

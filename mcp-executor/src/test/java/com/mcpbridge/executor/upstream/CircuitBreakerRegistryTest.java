@@ -139,6 +139,22 @@ class CircuitBreakerRegistryTest {
         assertThat(registry.states()).isEmpty();
     }
 
+    @Test
+    @DisplayName("onFailure 只在「非 OPEN → OPEN」这一刻返回 true，供 trip 指标去重")
+    void reportsOnlyTheTransitionIntoOpen() {
+        UpstreamSnapshot.CircuitBreaker config = cfg(2, 30_000L, 2);
+
+        assertThat(registry.onFailure(SERVER_ID, config)).as("第 1 次失败，未达阈值").isFalse();
+        assertThat(registry.onFailure(SERVER_ID, config)).as("第 2 次失败触顶，这才是 trip").isTrue();
+        // 已经 OPEN 之后再上报失败不算新的 trip，否则一个持续挂着的上游会把告警刷成噪声
+        assertThat(registry.onFailure(SERVER_ID, config)).as("OPEN 状态下重复上报").isFalse();
+
+        // HALF_OPEN 下的一次失败会重新打开熔断，那是新的一次 trip
+        registry.allow(SERVER_ID, cfg(2, 0L, 2));
+        assertThat(registry.states()).containsEntry(SERVER_ID, CircuitBreakerRegistry.State.HALF_OPEN);
+        assertThat(registry.onFailure(SERVER_ID, config)).as("半开探测失败重新打开").isTrue();
+    }
+
     // ------------------------------------------------------------------ 夹具
 
     /** 把熔断打到 OPEN 并等过保持时间，使下一次 allow 必然进入 HALF_OPEN。 */

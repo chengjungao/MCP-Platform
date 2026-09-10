@@ -82,6 +82,10 @@ mcp:
       # 默认共享集群：节点接入令牌沿用 executor.bootstrap-token，开箱即用
       cluster-name: ${EXECUTOR_CLUSTER_NAME:default}
       cluster-entrypoint: ${EXECUTOR_CLUSTER_ENTRYPOINT:http://localhost:9090}
+    audit:
+      # 单次导出上限（MGM-05）。超限直接拒绝，不做静默截断——被截断的审计文件
+      # 看起来是完整的，拿去举证会得出错误结论。5 万行约 8~10MB。
+      export-max-rows: ${MANAGER_AUDIT_EXPORT_MAX_ROWS:50000}
 
 management:
   endpoints:

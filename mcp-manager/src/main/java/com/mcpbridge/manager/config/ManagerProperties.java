@@ -16,6 +16,7 @@ import java.time.Duration;
  * @param defaultPathPrefix 对外 PATH 保留前缀默认值（BR-3，可被集群配置覆盖）
  * @param parse             解析限制（REG-01/02）
  * @param bootstrap         首次启动初始化内置角色与管理员
+ * @param audit             审计（MGM-05）
  */
 @ConfigurationProperties(prefix = "mcp.manager")
 public record ManagerProperties(
@@ -24,7 +25,8 @@ public record ManagerProperties(
         @DefaultValue Executor executor,
         @DefaultValue("mcp") String defaultPathPrefix,
         @DefaultValue Parse parse,
-        @DefaultValue Bootstrap bootstrap) {
+        @DefaultValue Bootstrap bootstrap,
+        @DefaultValue Audit audit) {
 
     /**
      * @param secret HS256 签名密钥源串（平台按 SHA-256 派生 32 字节密钥）
@@ -87,5 +89,16 @@ public record ManagerProperties(
             @DefaultValue("default") String clusterName,
             /** 默认集群对外入口，用于拼接端点与 UI 展示。 */
             @DefaultValue("http://localhost:9090") String clusterEntrypoint) {
+    }
+
+    /**
+     * 审计（MGM-05）。
+     *
+     * @param exportMaxRows 单次导出的行数上限。超限直接拒绝并让使用者缩小筛选范围，
+     *                      <b>不做静默截断</b>：被截断的审计文件看起来是完整的，
+     *                      拿去做合规举证时会得出错误结论，比导不出来更危险。
+     *                      5 万行约 8~10MB，属于内存里拼一次字符串还能接受的范围。
+     */
+    public record Audit(@DefaultValue("50000") int exportMaxRows) {
     }
 }

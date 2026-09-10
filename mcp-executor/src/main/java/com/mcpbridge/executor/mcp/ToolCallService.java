@@ -7,11 +7,14 @@ import com.mcpbridge.common.snapshot.ServerSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.LogSanitizer;
+import com.mcpbridge.common.util.TraceContext;
 import com.mcpbridge.executor.auth.UpstreamCredentialProvider;
+import com.mcpbridge.executor.metrics.ExecutorMetrics;
 import com.mcpbridge.executor.upstream.RestRequest;
 import com.mcpbridge.executor.upstream.RestRequestBuilder;
 import com.mcpbridge.executor.upstream.UpstreamInvoker;
 import com.mcpbridge.executor.upstream.UpstreamResponse;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -42,24 +45,41 @@ public class ToolCallService {
     private final RestRequestBuilder requestBuilder;
     private final UpstreamInvoker invoker;
     private final UpstreamCredentialProvider credentialProvider;
+    private final ExecutorMetrics metrics;
 
     public ToolCallService(RestRequestBuilder requestBuilder,
                            UpstreamInvoker invoker,
-                           UpstreamCredentialProvider credentialProvider) {
+                           UpstreamCredentialProvider credentialProvider,
+                           ExecutorMetrics metrics) {
         this.requestBuilder = requestBuilder;
         this.invoker = invoker;
         this.credentialProvider = credentialProvider;
+        this.metrics = metrics;
     }
 
     /**
      * @param arguments {@code params.arguments}，可为 null（无参 tool）
+     * @param trace     链路上下文（OPS-02）。发往上游的 span-id 在这里派生，
+     *                  使「一次调用对应一次上游请求」在链路系统里可区分
      */
-    public Mono<ObjectNode> call(ServerSnapshot server, ToolSnapshot tool, JsonNode arguments) {
+    public Mono<ObjectNode> call(ServerSnapshot server, ToolSnapshot tool, JsonNode arguments, TraceContext trace) {
         // 参数装配是同步的，失败会直接抛 McpErrorException；由控制器层的 Mono.defer 转成错误信号
         RestRequest request = requestBuilder.build(server, tool, arguments);
+        // 计时从参数装配之后开始：装配失败属于「调用方传错了参数」，计入耗时只会污染这个接口的 P99
+        Timer.Sample sample = metrics.startTimer();
+        // 每个上游请求各派生一个 span：同一入站请求读 resource 会触发 tool 调用，
+        // 复用同一个 span-id 会让链路里两次不同的调用看起来是同一次
+        String traceparent = trace == null ? null : trace.child().header();
         return credentialProvider.resolve(server, tool)
-                .flatMap(credentials -> invoker.invoke(server, tool, request, credentials))
-                .map(response -> assemble(server, tool, response));
+                .flatMap(credentials -> invoker.invoke(server, tool, request, credentials, traceparent))
+                .map(response -> assemble(server, tool, response))
+                .doOnNext(result -> metrics.recordToolCall(server.pathSegment(), tool.name(),
+                        result.path("isError").asBoolean(false)
+                                ? ExecutorMetrics.ToolOutcome.UPSTREAM_ERROR
+                                : ExecutorMetrics.ToolOutcome.SUCCESS,
+                        sample))
+                .doOnError(error -> metrics.recordToolCall(server.pathSegment(), tool.name(),
+                        ExecutorMetrics.ToolOutcome.PLATFORM_ERROR, sample));
     }
 
     private ObjectNode assemble(ServerSnapshot server, ToolSnapshot tool, UpstreamResponse response) {
@@ -94,6 +114,8 @@ public class ToolCallService {
             ObjectNode meta = result.putObject("_meta");
             meta.put("responseTruncated", true);
             meta.put("hint", "上游响应超出 max-response-bytes，已截断");
+            // 截断是可配置阈值被撞到的事实，不是错误；但它意味着客户端拿到的是不完整数据，值得被观测到
+            metrics.recordTruncatedResponse(server.pathSegment(), tool.name());
         }
         return result;
     }

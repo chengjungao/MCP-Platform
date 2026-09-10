@@ -16,6 +16,7 @@ const auth = useAuthStore()
 const rows = ref<AuditView[]>([])
 const total = ref(0)
 const loading = ref(false)
+const exporting = ref(false)
 const query = reactive({ page: 0, size: 50, action: '' })
 
 /** 后端默认每页 50，这里不擅自改小：审计页的用法是顺着时间往下扫，翻页越少越好。 */
@@ -54,6 +55,23 @@ function onSizeChange(size: number): void {
   void load()
 }
 
+/**
+ * 导出 CSV。
+ *
+ * 导出的是「当前筛选条件」，而不是当前这一页——页面上写清楚，避免有人以为只导了 50 条。
+ * 成功后不弹 toast：浏览器自己会出现下载项，再弹一个只会挡住视线。
+ */
+async function onExport(): Promise<void> {
+  exporting.value = true
+  try {
+    await auditApi.exportCsv(query.action || undefined)
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    exporting.value = false
+  }
+}
+
 function formatDetail(detail?: Record<string, unknown>): string {
   if (!detail) return '（无附加信息）'
   return JSON.stringify(detail, null, 2)
@@ -78,7 +96,7 @@ onMounted(() => {
         <h2>审计日志</h2>
         <p class="subtitle">
           注册、覆盖、发布、回滚、密钥变更与成员授权全部留痕（MGM-05）。
-          日志只读，任何角色都不能删改；密钥类记录只含类型与掩码。
+          日志只读，任何角色都不能删改——数据库层另有触发器兜底；密钥类记录只含类型与掩码。
         </p>
       </div>
       <div class="toolbar">
@@ -96,12 +114,18 @@ onMounted(() => {
           </el-option>
         </el-select>
         <el-button type="primary" @click="load">刷新</el-button>
+        <el-button :loading="exporting" @click="onExport">导出 CSV</el-button>
       </div>
     </div>
 
     <el-alert v-if="!canRead" type="warning" :closable="false" show-icon class="tip">
       <template #title>当前账号没有 audit:read 权限，下面的列表大概率是空的</template>
     </el-alert>
+
+    <p class="muted export-hint">
+      导出的是<b>当前筛选条件下的全部记录</b>（不只是本页），超过后端上限会直接拒绝并提示缩小范围——
+      平台不做静默截断，因为被截断的审计文件看起来是完整的。
+    </p>
 
     <el-table v-loading="loading" :data="rows" border stripe size="small">
       <el-table-column type="expand">
@@ -174,6 +198,12 @@ onMounted(() => {
 <style scoped>
 .tip {
   margin-bottom: 12px;
+}
+
+.export-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .detail {

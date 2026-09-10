@@ -192,7 +192,7 @@ erDiagram
         bigint id PK
         string type "shared/private"
         string entrypoint "对外入口"
-        jsonb scopes "可发布范围/配额"
+        jsonb scopes "可发布范围/配额"   -- v0.2 命名；实现在 V9 改名为 quota（避开与 Auth-D 的 OAuth scope 同名），语义收敛为发布配额，见 ARCHITECTURE §4.6
     }
     publish_binding {
         bigint id PK

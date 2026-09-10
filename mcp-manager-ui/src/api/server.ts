@@ -9,8 +9,12 @@ import type {
   EffectiveModelView,
   PageQuery,
   PageView,
+  PromptRequest,
+  PromptView,
   PublishRequest,
   PublishResult,
+  ResourceRequest,
+  ResourceView,
   RollbackRequest,
   ServerCreateRequest,
   ServerUpdateRequest,
@@ -101,6 +105,52 @@ export function resetToolOverlay(serverId: number, toolId: number): Promise<Tool
 
 export function batchToggle(serverId: number, request: ToolBatchToggleRequest): Promise<ToolView[]> {
   return post<ToolView[]>(`/servers/${serverId}/tools/batch-toggle`, request)
+}
+
+// ---- Resource（SVR-05）----
+
+export function resources(serverId: number): Promise<ResourceView[]> {
+  return get<ResourceView[]>(`/servers/${serverId}/resources`)
+}
+
+/** 新增 Resource；URI 在 Server 内唯一，重复会被后端 400。 */
+export function createResource(serverId: number, request: ResourceRequest): Promise<ResourceView> {
+  return post<ResourceView>(`/servers/${serverId}/resources`, request)
+}
+
+export function updateResource(
+  serverId: number,
+  resourceId: number,
+  request: ResourceRequest
+): Promise<ResourceView> {
+  return put<ResourceView>(`/servers/${serverId}/resources/${resourceId}`, request)
+}
+
+export function deleteResource(serverId: number, resourceId: number): Promise<void> {
+  return del<void>(`/servers/${serverId}/resources/${resourceId}`)
+}
+
+// ---- Prompt（SVR-06）----
+
+export function prompts(serverId: number): Promise<PromptView[]> {
+  return get<PromptView[]>(`/servers/${serverId}/prompts`)
+}
+
+/** 新增 Prompt；模板占位符与参数声明不一致会被后端 400，前端也做同一份校验。 */
+export function createPrompt(serverId: number, request: PromptRequest): Promise<PromptView> {
+  return post<PromptView>(`/servers/${serverId}/prompts`, request)
+}
+
+export function updatePrompt(
+  serverId: number,
+  promptId: number,
+  request: PromptRequest
+): Promise<PromptView> {
+  return put<PromptView>(`/servers/${serverId}/prompts/${promptId}`, request)
+}
+
+export function deletePrompt(serverId: number, promptId: number): Promise<void> {
+  return del<void>(`/servers/${serverId}/prompts/${promptId}`)
 }
 
 // ---- 发布（PUB-01 ~ PUB-04） ----

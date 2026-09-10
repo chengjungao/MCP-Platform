@@ -220,6 +220,8 @@ export interface UpstreamEntryRequest {
   name?: string
   baseUrls: string[]
   lbStrategy?: LbStrategy
+  /** 与 baseUrls 等长；lbStrategy=WEIGHTED 时必填，后端会校验长度与总和。 */
+  weights?: number[]
   connectTimeoutMs?: number
   readTimeoutMs?: number
   retries?: number
@@ -361,6 +363,8 @@ export interface ToolView {
   streamFormat?: string
   overlayStatus: OverlayStatus
   hasOverlay: boolean
+  /** Tool 级上行授权覆盖（BR-4），只回掩码；NONE 表示继承 REST 服务级。 */
+  authB?: AuthBView
 }
 
 /** JSON Schema 是任意嵌套结构，这里不做过度建模，用索引签名兜住。 */
@@ -377,6 +381,8 @@ export interface ToolOverlayRequest {
   enabled?: boolean | null
   streaming?: boolean | null
   streamFormat?: string | null
+  /** Tool 级上行授权覆盖（BR-4）。不传 = 不修改；type=NONE = 撤销覆盖。 */
+  authB?: AuthBRequest | null
 }
 
 export interface ToolBatchToggleRequest {
@@ -422,6 +428,99 @@ export interface ToolSnapshot {
   upstreamRef?: string
 }
 
+// ---------------------------------------------------------------- Resource / Prompt（SVR-05/06）
+
+/**
+ * Resource 写入（后端 ServerDtos.ResourceRequest）。
+ *
+ * <p>`content` 与 `toolId` **必须二选一**：前者是静态内容，后者是「映射到一个只读 tool，
+ * 读时透传调用」。两个都不给会被后端 400 拒绝——等于声明了一个读不出东西的资源。
+ *
+ * <p>更新是**整份替换**，没有 overlay 那种「null = 不修改」的语义，
+ * 所以每次提交都要把完整表单带上（清空映射就是不传 toolId）。
+ */
+export interface ResourceRequest {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+  content?: string
+  toolId?: number | null
+  ttlMs?: number | null
+}
+
+/**
+ * Resource 视图。
+ *
+ * <p>`toolName` 是**当前生效名**（tool 名可被覆盖改掉），后端已解析好，UI 直接展示即可。
+ */
+export interface ResourceView {
+  id: number
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+  content?: string
+  toolId?: number
+  toolName?: string
+  ttlMs?: number
+  sortOrder: number
+}
+
+/** Prompt 参数声明。名字必须能原样写进 `{{...}}` 占位符。 */
+export interface PromptArgumentRequest {
+  name: string
+  description?: string
+  required: boolean
+}
+
+/**
+ * Prompt 写入（后端 ServerDtos.PromptRequest）。
+ *
+ * <p>`template` 里的占位符与 `arguments` 必须**双向一致**：写了没声明会被拒（拼错的占位符
+ * 运行时变成空洞），声明了没用也会被拒（客户端会提示用户填一个对结果毫无影响的值）。
+ */
+export interface PromptRequest {
+  name: string
+  title?: string
+  description?: string
+  template?: string
+  arguments?: PromptArgumentRequest[]
+  ttlMs?: number | null
+}
+
+export interface PromptView {
+  id: number
+  name: string
+  title?: string
+  description?: string
+  template?: string
+  arguments?: PromptArgumentRequest[]
+  ttlMs?: number
+  sortOrder: number
+}
+
+/** 发布快照里的 Resource（后端 com.mcpbridge.common.snapshot.ResourceSnapshot）。 */
+export interface ResourceSnapshot {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+  content?: string
+  toolName?: string
+  ttlMs?: number
+}
+
+/** 发布快照里的 Prompt（后端 com.mcpbridge.common.snapshot.PromptSnapshot）。 */
+export interface PromptSnapshot {
+  name: string
+  title?: string
+  description?: string
+  template?: string
+  arguments?: PromptArgumentRequest[]
+  ttlMs?: number
+}
+
 export interface EffectiveModelView {
   serverId: number
   name: string
@@ -432,6 +531,9 @@ export interface EffectiveModelView {
   protocolVersion: string
   listTtlMs: number
   tools: ToolSnapshot[]
+  /** 两类对外能力声明；同一份预览里不含任何凭据。 */
+  resources: ResourceSnapshot[]
+  prompts: PromptSnapshot[]
 }
 
 // ---------------------------------------------------------------- 集群与发布
@@ -454,6 +556,22 @@ export interface ClusterView {
   publishedServerCount: number
   revision: number
   createdAt?: string
+  /** 发布配额；后端在「不限」时返回 null，前端只需判断有没有值。 */
+  quota?: ClusterQuota
+}
+
+/**
+ * 集群发布配额（PUB-01）。
+ *
+ * 三个维度都可缺省，缺省即该维度不限；三个都为空等价于「整体不限」（后端此时直接返回 null）。
+ */
+export interface ClusterQuota {
+  /** 本集群最多同时发布的 Server 数。 */
+  maxServers?: number
+  /** 单个 Server 最多启用多少个 tool。 */
+  maxToolsPerServer?: number
+  /** 单个 Server 最多有多少 Resource + Prompt。 */
+  maxCatalogItemsPerServer?: number
 }
 
 export interface ClusterRequest {
@@ -464,7 +582,8 @@ export interface ClusterRequest {
   ownerDeptId?: number
   description?: string
   enabled?: boolean
-  scopes?: Record<string, unknown>
+  /** 留空表示不限。 */
+  quota?: ClusterQuota
 }
 
 export interface NodeView {
@@ -544,6 +663,10 @@ export interface PlatformMeta {
   defaultPathPrefix: string
   pathSegmentPattern: string
   toolNamePattern: string
+  /** Resource URI 规则（必须有 scheme），与后端 ResourcePromptService.RESOURCE_URI 同源。 */
+  resourceUriPattern: string
+  /** Prompt 名规则，与后端 ResourcePromptService.PROMPT_NAME 同源。 */
+  promptNamePattern: string
   builtinRoles: string[]
 }
 // ---------------------------------------------------------------- 跨部门访问申请

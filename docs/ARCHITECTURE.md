@@ -70,11 +70,13 @@ REST 服务。Executor 从不回写业务配置，只上报节点注册与心跳
 | `api_registration` | 原始文档 `raw_doc` + `raw_doc_sha256`。读取原文时**重算哈希并比对**，不一致直接拒绝（BR-2 双保险：既没有写路径，也不信任存储未被绕过应用改过） |
 | `mcp_server` | `base_model`(jsonb) / `overlay`(jsonb) / 生效列；`path_segment` 唯一约束（BR-3） |
 | `mcp_tool` | `anchor` = `METHOD path`；`base_*` 列 + `overlay`(jsonb) + `overlay_status` |
-| `auth_config` | Auth-B 凭据密文（AES-256-GCM）+ Auth-D 令牌 sha256 集合 |
-| `executor_cluster` | `type`(SHARED/PRIVATE)、`entrypoint`、`path_prefix`、`node_token_hash`、`revision`、授权部门集合 |
+| `mcp_resource` | SVR-05。`uri` 在 Server 内唯一；`static_content` 与 `tool_id` 二选一（`tool_id` 外键 `ON DELETE SET NULL`） |
+| `mcp_prompt` | SVR-06。`name` 在 Server 内唯一；`arguments`(jsonb) 与 `template` 占位符必须双向一致 |
+| `auth_config` | Auth-B 凭据密文（AES-256-GCM）+ Auth-D 令牌 sha256 集合。三维度由表达式唯一索引 `uk_auth_config_scope (server_id, tool_id, COALESCE(upstream_service_id,''))` 约束 |
+| `executor_cluster` | `type`(SHARED/PRIVATE)、`entrypoint`、`path_prefix`、`node_token_hash`、`revision`、授权部门集合、`quota`(jsonb) |
 | `executor_node` | 节点注册信息、`status`、最后心跳 |
 | `publish_binding` | `(server, cluster)` 上的 `binding_version` + `snapshot`(jsonb) + `fingerprint` + `state` + `current` 标记；历史版本永不删除 |
-| `audit_log` | 30 种动作码 + 目标类型/ID + 结构化 detail + traceId |
+| `audit_log` | 38 种动作码 + 目标类型/ID + 结构化 detail + traceId。**DB 级 append-only**：`BEFORE UPDATE/DELETE` 触发器 + `REVOKE UPDATE, DELETE, TRUNCATE`（V8） |
 
 **`publish_binding` 是控制面与数据面之间唯一的契约载体。** 发布不是「把 Server 标记为已发布」，
 而是「把此刻的生效模型序列化进 binding 的 snapshot 列，并把 cluster.revision 加一」。
@@ -175,6 +177,64 @@ POST /mcp/{segment}
 第 7 步的映射依据是解析阶段记录的 `parameterIn`（每个参数来自 query / path / header / body），
 它随快照下发，Executor 不需要重新读文档。
 
+### 4.5 Resource 与 Prompt 的装配（SVR-05/06）
+
+Swagger 里没有这两个概念，所以它们是**纯手工声明的对外能力**，但走的是与 tool 完全相同的
+「控制面写入 → 发布快照 → 节点加载」链路。两个只能在装配期做、运行时做不了的决定：
+
+1. **Resource 的 tool 映射要在装配时解析成「生效名」。** `mcp_resource.tool_id` 是外键，
+   而 tool 的名字可以被覆盖改掉（BR-2）。快照里存的必须是**生效名**，Executor 才知道该调谁。
+   同一原因，映射的 tool 若已被删除或被停用，这条 Resource 在装配时**被跳过**而不是抛错：
+   一份坏配置不该让整个发布失败，但也不能静默——控制台列表与生效模型预览都会标出它。
+   另外，`resources/read` 走的是 `toolCallService.call(server, tool, null)`，
+   **不带任何参数**，所以「映射的 tool 必须有路径参数」这种配置在读取时才炸，控制面在选型时就把它排除掉。
+
+2. **Prompt 的模板与参数声明必须在保存期就对齐。** 占位符 `{{argName}}` 的规则由
+   `com.mcpbridge.common.util.PromptTemplate` 承载，放在 `mcp-common` 而不是各写一份：
+   **控制面用它做配置期校验，Executor 用它做运行时渲染**。两处若各写一套正则，
+   迟早出现「控制面认为合法、数据面按另一套规则渲染」的错位。
+   校验是双向的——未声明的占位符和未被使用的参数都拒绝。运行时的语义是「未提供的占位符替换成空串」，
+   那是兜底，不该是常态：拼错一个字母会变成线上提示词里一个沉默的空洞，比一次 400 难查得多。
+
+`ResourcePromptService` 需要权限校验，而 `ServerService` 需要把 Resource/Prompt 装配进目录——
+两者直接互相依赖会成环。解法是把 `requireManage` / `requireRead` 下沉到 `ServerAccessGuard`
+（只依赖仓储与部门树，没有反向依赖），而不是用 `@Lazy` 把环盖住：掩盖依赖环等于把启动顺序
+变成一个隐式契约。
+
+### 4.6 发布配额（PUB-01）
+
+`executor_cluster.quota`（jsonb，V9 由 `scopes` 改名）存三个容量上限：
+
+```json
+{"maxServers": 50, "maxToolsPerServer": 200, "maxCatalogItemsPerServer": 100}
+```
+
+缺省的键表示该维度不限；整列为 null 是默认状态（整体不限）。**配额在发布时校验，只在发布时校验**：
+
+- 校验点是 `PublishService.requirePublishable` 的最后一站，与协议版本、baseUrls、tool 冲突等检查合并成
+  一次 `409 INVALID_STATE`，`details` 里逐项给出 `quota.<维度>` 的"上限 N，当前 M"。
+- 判定规则本身是 `ClusterQuota.violations(...)`——**纯函数，四个数字进、问题清单出**。
+  这类"等于上限到底算不算超"的逻辑埋进 Service 就只能靠集成测试碰运气，抽出来才能穷举单测。
+- **已发布在本集群的 Server 重新发布不占用新名额**，否则配额用满时连自己都发布不了。
+- **配额不进 `ServerSnapshot`**，因此改配额不推进 `cluster.revision`：Executor 没必要为此重载快照。
+  只有入口地址、PATH 前缀、名称这类会改变已发布端点形状的字段才推进版本号
+  （`ClusterService.update` 里把"审计口径的 changes"与"revision 口径的 endpointAffecting"分开，
+  配额与描述只留痕不推进）。
+
+**为什么是配额而不是限流**：两者管的事情不同，不该混在一个字段里。
+
+| | 发布配额（已实现） | 运行时限流（未实现） |
+| --- | --- | --- |
+| 管什么 | 集群能装多少东西（容量） | 每秒能打多少请求（速率） |
+| 何时校验 | 发布时，低频、可回滚 | 每次请求，热路径 |
+| 拒绝代价 | 一次 409，改完配置再发 | 一次线上调用失败，客户端/模型要处理 |
+| 需要什么 | 一段纯校验逻辑 | 令牌桶（本地 or 分布式）+ 快照新字段 + 协议级拒绝语义 + 指标 |
+
+后者的"协议级拒绝语义"是关键难点：MCP 侧要决定是回 JSON-RPC error 还是 `isError` 工具结果，
+两者对模型行为的影响不同；还要决定限流计数放在节点本地（集群内不共享、总量约为 N×limit）还是
+放共享状态（引入一次 redis 往返，热路径上不可忽略）。这是一个需要独立设计的 P1 项，
+不是"给字段加个读取方"能顺手带出来的。当前平台明确把边界划在"鉴权注入 + 超时/重试/熔断 + 容量配额"。
+
 ---
 
 ## 5. 双跳鉴权（BR-4）
@@ -184,7 +244,25 @@ POST /mcp/{segment}
 | 跳 | 方向 | 模式 | P0 状态 |
 | --- | --- | --- | --- |
 | **Auth-D** | MCP Client → Executor | `NONE` / `STATIC_BEARER` / `OAUTH2` | 前两种已实现；OAUTH2 **显式拒绝**（501 + `-32004` + 提示改用 STATIC_BEARER） |
-| **Auth-B** | Executor → REST 服务（每个 REST 服务独立配置） | `NONE` / `API_KEY`(header/query) / `HTTP`(bearer/basic) / `OAUTH2_CLIENT_CREDENTIALS` / `CUSTOM_HEADER` | 五种全部实现 |
+| **Auth-B** | Executor → REST 服务 | `NONE` / `API_KEY`(header/query) / `HTTP`(bearer/basic) / `OAUTH2_CLIENT_CREDENTIALS` / `CUSTOM_HEADER` | 五种全部实现，**三级回落**见下 |
+
+### 5.1 Auth-B 的三级回落（BR-4）
+
+一份 REST 服务里往往只有个别接口用不同的凭据（例如大部分走网关令牌、少数走专属 API Key）。
+为此 Auth-B 分三个维度存储，运行时按优先级取第一个非 `NONE` 的：
+
+```
+Tool.authBOverride  >  UpstreamEntry.authB  >  Server.authB
+（auth_config.tool_id≠0）（tool_id=0, serviceId≠空）（tool_id=0, serviceId=空）
+```
+
+三个维度由 `(tool_id, upstream_service_id)` **互斥且穷尽**地划分——这条不变量是硬约束，
+不能只判 `tool_id`：REST 服务级也是 `tool_id = 0`，混判会让「同一 Server 下 ≥2 个 REST 服务
+各配了 Auth-B」按 `(serverId, 0)` 查出多行，把发布链路打挂（详见 `AuthConfigScopeTest`）。
+
+运行时的回落逻辑在 Executor 的 `UpstreamCredentialProvider.effectiveAuthB`，
+解密与掩码逻辑在控制面三处共用同一段代码（`AuthConfigService.persistAuthB`），
+差别只在配置行归属哪个维度。
 
 三条不可让步的安全约束：
 
@@ -309,13 +387,13 @@ cluster 模式配了非 0 会 WARN 后忽略。
 
 | 项 | 现状 | 影响 |
 | --- | --- | --- |
-| **WEIGHTED 负载均衡** | `UpstreamRequest` 没有 weights 字段，Manager 写入快照时 `weights` 恒为空数组；Executor 发现权重数量与地址数量不匹配后**退回轮询**（该退化路径有单元测试覆盖） | 选 WEIGHTED 的实际效果等同 ROUND_ROBIN。UI 如实告警，不做假的权重编辑器 |
 | **流式 tool（BR-5）** | 标记为 streaming 的 tool **从 `tools/list` 中剔除**；直接 `tools/call` 返回 501 + `-32002` + 原因 | 「列出来却调不通」比「不列」更糟——客户端会把它交给模型，然后模型每次都失败。RT-1 的 Spike 未做，不做 P0 承诺 |
 | **Auth-D OAuth 2.1（EXE-07）** | 元数据字段会存、`resourceMetadataUrl` 会派生，但授权码 + PKCE + DCR 未实现；配置成 OAUTH2 的 Server 端点直接 501 拒绝 | P1 必达项。GA 前不可用于生产对外端点 |
-| **resources / prompts（BR-7）** | `resources/list`、`prompts/list` 返回空目录 + `ttlMs`；`capabilities` 里只在非空时才声明 | P1。Swagger 推导不出这两类对象，需要手动配置能力 |
+| **resources / prompts（BR-7）** | `resources/list`、`prompts/list`、`resources/read`、`prompts/get` 已实现；两类对象在控制面**手动声明**（Swagger 推导不出来），随发布快照下发。`capabilities` 里只在非空时才声明 | 装配期细节见 §4.5。映射到已删除/停用 tool 的 Resource 会被静默跳过（列表与生效预览都会标出） |
 | **tools/list 分页** | 不分页。传了 cursor 也**明确不回 `nextCursor`**（表示清单已完整） | 单集群单 Server 的 tool 数上限是几百，一次返回比分页游标更简单可靠 |
 | **PATH 变更 301 迁移提示** | 未实现（PRD 标为 P2） | 改末段就是断链，只能提前通知使用方 |
-| **tool 级 Auth-B 覆盖** | 未实现（P1），Auth-B 只在 Server 级 | 同一 REST 服务内个别接口鉴权不同时无法表达 |
+| **运行时限流** | **未实现，且有意不做**（见下方评估）。集群已有**发布配额**（`executor_cluster.quota`：`maxServers` / `maxToolsPerServer` / `maxCatalogItemsPerServer`），在发布时校验 | 配额管的是"集群能装多少东西"（容量），限流管的是"每秒能打多少请求"（速率）。前者在发布这个低频可回滚的动作上拦最经济；后者需要令牌桶 + 新的拒绝语义 + 快照字段，是独立的一件事 |
+| **tool 级 Auth-B 覆盖** | 已实现（BR-4）：`auth_config.tool_id != 0` 维度，三层回落 `Tool > REST 服务级 > Server`。控制面写入走 `PUT /servers/{id}/tools/{toolId}/overlay` 的 `authB` 字段 | 与 REST 服务级共用一套加解密与掩码逻辑，差别只在归属维度 |
 | **Element Plus 全量引入** | UI 包 element-plus chunk 约 817 kB（gzip 前） | 已用 `manualChunks` 把 UI 库与业务代码拆开，避免每次发版让 1MB 的库缓存跟着失效。内部控制台首屏不如可维护性重要 |
 
 ---
@@ -324,8 +402,8 @@ cluster 模式配了非 0 会 WARN 后忽略。
 
 | 手段 | 位置 |
 | --- | --- |
-| 审计日志 | 30 种动作码（`AuditAction`），结构化 detail 记录字段级 from/to 与 traceId |
-| Prometheus 指标 | Executor `/actuator/prometheus`（需 `metrics:read`） |
+| 审计日志 | 38 种动作码（`AuditAction`），结构化 detail 记录字段级 from/to 与 traceId。**append-only 由 DB 强制**（V8 触发器），并提供 CSV 导出（`GET /audits/export`，含公式注入防护与行数上限） |
+| Prometheus 指标 | Executor `/actuator/prometheus` —— **无应用层鉴权**：数据面不引 Spring Security（`mcp-executor/pom.xml` 无该依赖），`/actuator/**`、`/executor/status`、`/healthz` 全部裸暴露，靠网络隔离兜底。文档此前写的「需 `metrics:read`」指的是**控制面**的 `/actuator/**`（`SecurityConfig` 的规则），两者不要混为一谈 |
 | Executor 全量自检 | `/executor/status`：节点身份、快照 revision/etag/就绪状态、共享状态模式、熔断概况 |
 | Executor 健康 | `/healthz`：供 LB 摘除判定 |
 | Manager 健康 | `/actuator/health` |

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.mcpbridge.common.error.PlatformException;
 import com.mcpbridge.common.protocol.McpProtocol;
+import com.mcpbridge.common.snapshot.AuthBSnapshot;
 import com.mcpbridge.common.snapshot.ToolSnapshot;
 import com.mcpbridge.common.util.Json;
 import com.mcpbridge.common.util.ToolNames;
@@ -171,8 +172,24 @@ public class OverlayService {
         return result;
     }
 
-    /** 生成 Executor 运行时加载的生效 tool（仅 enabled=true 的会进入快照，由调用方过滤）。 */
+    /**
+     * 生成 Executor 运行时加载的生效 tool（仅 enabled=true 的会进入快照，由调用方过滤）。
+     *
+     * <p>不带 Tool 级 Auth-B 覆盖。{@link com.mcpbridge.manager.service.SnapshotAssembler} 走
+     * 下面的带参重载——本服务刻意不依赖 {@code AuthConfigService}，以保持「纯实体上做合并计算」
+     * 从而可脱离 Spring 上下文单测。
+     */
     public ToolSnapshot toSnapshot(McpTool tool) {
+        return toSnapshot(tool, null);
+    }
+
+    /**
+     * 带 Tool 级 Auth-B 覆盖的生效 tool（BR-4）。
+     *
+     * @param authBOverride Tool 级上行授权；{@code null} 表示未配置，Executor 侧会继续回落到
+     *                      REST 服务级、再到 Server 级
+     */
+    public ToolSnapshot toSnapshot(McpTool tool, AuthBSnapshot authBOverride) {
         ObjectNode overlay = toolOverlay(tool);
         boolean streaming = overlay.has(FIELD_STREAMING)
                 ? overlay.get(FIELD_STREAMING).asBoolean(tool.isStreaming())
@@ -192,10 +209,19 @@ public class OverlayService {
                 streaming ? streamFormat : null,
                 tool.isIdempotent(),
                 tool.getUpstreamRef(),
-                null);
+                authBOverride);
     }
 
     public ServerDtos.ToolView toToolView(McpTool tool) {
+        return toToolView(tool, null);
+    }
+
+    /**
+     * 带 Tool 级 Auth-B 回显的视图。
+     *
+     * @param authB Tool 级覆盖的掩码视图；{@code null} 表示「未配置」，UI 应显示为「继承上一层」
+     */
+    public ServerDtos.ToolView toToolView(McpTool tool, ServerDtos.AuthBView authB) {
         ObjectNode overlay = toolOverlay(tool);
         boolean streaming = overlay.has(FIELD_STREAMING)
                 ? overlay.get(FIELD_STREAMING).asBoolean(tool.isStreaming())
@@ -218,7 +244,8 @@ public class OverlayService {
                 streaming,
                 streaming ? text(overlay, FIELD_STREAM_FORMAT, tool.getStreamFormat()) : null,
                 tool.getOverlayStatus().name(),
-                !overlay.isEmpty());
+                !overlay.isEmpty(),
+                authB);
     }
 
     /**

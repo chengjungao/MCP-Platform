@@ -50,10 +50,15 @@ public class ExecutorCluster extends BaseEntity {
     @Column(nullable = false)
     private boolean enabled = true;
 
-    /** 可发布范围与配额（jsonb）。 */
+    /**
+     * 发布配额（jsonb，V9 由 {@code scopes} 改名而来，见 {@link ClusterQuota}）。
+     *
+     * <p>存的是 {@code ClusterQuota} 的 JSON 形态；null = 不限。它只参与发布前校验，
+     * 不进快照，因此改配额不需要推进 {@code revision}。
+     */
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
-    private String scopes;
+    private String quota;
 
     /** 被授权可发布到本集群的部门集合（集群授权，§5.4）。 */
     @ElementCollection(fetch = FetchType.EAGER)
@@ -82,8 +87,8 @@ public class ExecutorCluster extends BaseEntity {
     public void setDescription(String description) { this.description = description; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
-    public String getScopes() { return scopes; }
-    public void setScopes(String scopes) { this.scopes = scopes; }
+    public String getQuota() { return quota; }
+    public void setQuota(String quota) { this.quota = quota; }
     public Set<Long> getGrantedDeptIds() { return grantedDeptIds; }
     public void setGrantedDeptIds(Set<Long> grantedDeptIds) { this.grantedDeptIds = grantedDeptIds; }
     public String getNodeTokenHash() { return nodeTokenHash; }

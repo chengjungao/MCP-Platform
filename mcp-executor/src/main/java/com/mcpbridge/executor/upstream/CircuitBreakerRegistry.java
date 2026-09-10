@@ -50,8 +50,15 @@ public class CircuitBreakerRegistry {
         }
     }
 
-    public void onFailure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
-        breaker(breakerKey).failure(breakerKey, config);
+    /**
+     * 上报一次失败。
+     *
+     * @return true 表示本次失败<b>把熔断从非 OPEN 推到了 OPEN</b>。
+     *         调用方据此记一次 trip 指标——把「刚打开」和「一直是打开的」分开，
+     *         否则一个持续挂着的上游会每分钟刷出成百上千次「熔断打开」，告警会被淹没。
+     */
+    public boolean onFailure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+        return breaker(breakerKey).failure(breakerKey, config);
     }
 
     /** 运维视角的状态快照（{@code /executor/status} 用）。 */
@@ -107,15 +114,18 @@ public class CircuitBreakerRegistry {
             }
         }
 
-        synchronized void failure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+        synchronized boolean failure(String breakerKey, UpstreamSnapshot.CircuitBreaker config) {
+            State before = state;
             if (state == State.HALF_OPEN) {
                 trip(breakerKey, config);
-                return;
+            } else {
+                consecutiveFailures++;
+                if (consecutiveFailures >= Math.max(1, config.failureThreshold())) {
+                    trip(breakerKey, config);
+                }
             }
-            consecutiveFailures++;
-            if (consecutiveFailures >= Math.max(1, config.failureThreshold())) {
-                trip(breakerKey, config);
-            }
+            // 只在「非 OPEN → OPEN」这一刻算 trip；状态没变（含本来就是 OPEN）都不算
+            return before != State.OPEN && state == State.OPEN;
         }
 
         synchronized State state() {
